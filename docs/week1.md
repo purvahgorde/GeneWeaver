@@ -1,21 +1,30 @@
-# Week 1 -- CPU DNA Alignment Baseline
+# Week 1 -- CPU DNA Alignment Baseline & Chunker Integration
 
 ## Overview
 
 Week 1 establishes the CPU-only DNA sequence alignment reference
-implementation.  This baseline is intentionally simple and free of
-GPU (CUDA / Numba) or distributed (Dask) dependencies so that it can
-serve as the correctness oracle when those accelerated back-ends are
-introduced in Week 2+.
+implementation (Days 1–3), benchmarks baseline CPU performance across
+varying sequence lengths and multiple rounds (Day 4), and integrates
+the alignment engine with Member 2's FASTA parser and genome chunker
+pipeline (Day 5).
+
+This baseline is intentionally simple and free of GPU (CUDA / Numba) or
+distributed (Dask) dependencies so that it serves as the correctness oracle
+and performance reference when accelerated back-ends are introduced in Week 2+.
 
 ## Implementation
 
 | File | Purpose |
 |------|---------|
-| `src/alignment/cpu_alignment.py` | Core CPU alignment (`align_sequence`, `align_sequences`, `AlignmentResult`) |
-| `src/alignment/__init__.py` | Package init -- re-exports public API |
-| `src/tests/test_cpu_alignment.py` | 56 pytest correctness tests |
-| `benchmarks/cpu_benchmark.py` | Benchmark script for baseline timing |
+| `src/alignment/cpu_alignment.py` | Core CPU alignment (`align_sequence`, `align_sequences`, `align_chunks`, `align_chunk_pairs`, `AlignmentResult`) |
+| `src/alignment/__init__.py` | Package init -- re-exports public alignment API |
+| `src/alignment/integration.py` | End-to-end integration helper connecting Member 2 parser/chunker with Member 1 alignment |
+| `src/tests/test_cpu_alignment.py` | 56 pytest correctness tests for core CPU alignment |
+| `src/tests/test_integration.py` | 22 pytest tests for chunk alignment and end-to-end pipeline |
+| `src/tests/test_parser.py` | 3 unit tests for FASTA parser |
+| `src/tests/test_chunking.py` | 5 unit tests for genome chunker |
+| `benchmarks/cpu_benchmark.py` | Multi-round benchmark script measuring per-pair, batch, and chunk alignment |
+| `data/mock_genome.fasta` | Mock genome dataset (chr1: 45 bp, chr2: 41 bp) for testing and pipeline validation |
 
 ### Algorithm
 
@@ -29,132 +38,234 @@ Character-by-character comparison of two equal-length DNA strings:
 
 ### Input / Output Contract
 
-**Input**: Two equal-length Python `str` of DNA bases (A, C, G, T).
-Lower-case is auto-normalised.
+**Input**:
+- `align_sequence(reference: str, query: str)`: Two equal-length Python `str` of DNA bases (A, C, G, T). Case-insensitive.
+- `align_sequences(pairs: list[tuple[str, str]])`: List of `(reference, query)` tuples.
+- `align_chunks(chunks: list[str], target: str, *, skip_unequal: bool = False)`: List of chunk strings against a target sequence.
+- `align_chunk_pairs(reference_chunks: list[str], query_chunks: list[str])`: Two parallel lists of chunk strings.
 
 **Output**: Frozen `AlignmentResult` dataclass:
 - `matches` (int)
 - `mismatches` (int)
 - `alignment_length` (int)
-- `score` (float) -- matches / alignment_length
-- `mismatch_positions` (list[int]) -- 0-based
+- `score` (float) -- matches / alignment_length (0.0 when length is 0)
+- `mismatch_positions` (list[int]) -- 0-based sorted indices
 
 ## Test Results
 
-**Framework**: pytest 9.1.1
-**Tests collected**: 56
-**Tests passed**: 56 / 56
+**Framework**: pytest 9.1.1  
+**Tests collected**: 86  
+**Tests passed**: 86 / 86 (100%)  
+**Execution time**: ~0.40 s  
 
 ### Test Categories
 
-| Category | Count | Description |
-|----------|-------|-------------|
-| Exact match | 6 | Various lengths including homopolymer, all 4 bases |
-| Mismatch | 9 | First/middle/last position, multiple, alternating, total |
-| Short sequences | 3 | 1-3 bp inputs |
-| Empty sequence | 2 | Both empty strings, result type check |
-| Invalid input | 13 | Wrong types, bad chars, whitespace, unequal lengths |
-| Case insensitivity | 3 | Lower, mixed, mismatch through case |
-| Boundary cases | 5 | Homopolymer, score precision, 10K-base single mismatch |
-| Batch alignment | 6 | Multiple pairs, order, single, empty, type, error propagation |
-| Contract invariants | 6 | Arithmetic, score bounds, consistency, immutability, determinism |
-| Import verification | 3 | Module, package, constant |
+| Category | File | Count | Description |
+|----------|------|-------|-------------|
+| Exact match | `test_cpu_alignment.py` | 6 | Various lengths including homopolymer, all 4 bases |
+| Mismatch | `test_cpu_alignment.py` | 9 | First/middle/last position, multiple, alternating, total |
+| Short sequences | `test_cpu_alignment.py` | 3 | 1-3 bp inputs |
+| Empty sequence | `test_cpu_alignment.py` | 2 | Both empty strings, result type check |
+| Invalid input | `test_cpu_alignment.py` | 13 | Wrong types, bad chars, whitespace, unequal lengths |
+| Case insensitivity | `test_cpu_alignment.py` | 3 | Lower, mixed, mismatch through case |
+| Boundary cases | `test_cpu_alignment.py` | 5 | Homopolymer, score precision, 10K-base single mismatch |
+| Batch alignment | `test_cpu_alignment.py` | 6 | Multiple pairs, order, single, empty, type, error propagation |
+| Contract invariants | `test_cpu_alignment.py` | 6 | Arithmetic, score bounds, consistency, immutability, determinism |
+| Import verification | `test_cpu_alignment.py` | 3 | Module, package, constant |
+| Chunk alignment | `test_integration.py` | 12 | Exact match, mismatches, empty chunks, validation, skip_unequal |
+| Chunk pairs | `test_integration.py` | 4 | Parallel lists, empty, length mismatch, type validation |
+| End-to-end pipeline | `test_integration.py` | 6 | Full flow with `data/mock_genome.fasta`, tail handling, missing file |
+| FASTA parser | `test_parser.py` | 3 | Parse mock genome, missing file, custom FASTA |
+| Genome chunker | `test_chunking.py` | 5 | Even chunking, tail chunking, oversized chunks, empty, reconstruction |
 
 **Command**:
-```
-cd src && python -m pytest tests/test_cpu_alignment.py -v --tb=short
+```bash
+python -m pytest -v
 ```
 
-## Benchmark Methodology
+---
 
-- **Timing**: `time.perf_counter()` (highest-resolution wall-clock timer).
-- **Sequences**: Randomly generated DNA with a fixed seed (42) for reproducibility.
-- **Mutation rate**: 10% (realistic for variant analysis).
-- **Setup excluded**: Sequence generation time is not included in the measured alignment time.
-- **Configurations**: 4 input sizes, each measured for both per-pair and batch API.
+## Day 4 -- CPU Benchmarking
+
+### Benchmark Methodology
+
+- **Timing**: `time.perf_counter()` (highest available resolution wall-clock timer).
+- **Repetitions**: 5 independent measurement rounds per configuration to capture both minimum (best-case) and average execution time.
+- **Sequences**: Randomly generated DNA with fixed seed (42) for reproducible benchmarking.
+- **Mutation rate**: 10% mismatch rate (realistic for biological variant and off-target analysis).
+- **Setup excluded**: Sequence generation and memory allocation are strictly excluded from the timed alignment loop.
+- **Configurations tested**: 4 input sizes across 3 benchmark modes:
+  - Small: 100 bp x 1,000 pairs (100,000 bases)
+  - Medium: 1,000 bp x 1,000 pairs (1,000,000 bases)
+  - Large: 10,000 bp x 100 pairs (1,000,000 bases)
+  - Extra Large: 100,000 bp x 10 pairs (1,000,000 bases)
+- **Benchmark modes**:
+  1. Per-pair API (`align_sequence` called in a loop)
+  2. Batch API (`align_sequences` called with pre-constructed pair list)
+  3. Chunk alignment API (`align_chunks` aligning genomic chunks against a target)
 
 **Command**:
-```
+```bash
 python benchmarks/cpu_benchmark.py
 ```
 
-## Benchmark Results
-
-### Environment
+### Environment Information
 
 | Property | Value |
 |----------|-------|
-| Python | 3.13.15 (MSC v.1944 64 bit AMD64) |
+| Python | 3.13.15 (tags/v3.13.15:4061bc4, Aug 5 2026, 13:05:39) [MSC v.1944 64 bit (AMD64)] |
 | Platform | Windows-11-10.0.26200-SP0 |
 | Processor | Intel64 Family 6 Model 141 Stepping 1, GenuineIntel |
+| Mutation Rate | 10% |
+| Repetitions | 5 rounds per configuration |
 
-### Per-pair benchmark (align_sequence called individually)
+### Actual Measured CPU Timings
 
-| Seq Length | Pairs | Total Bases | Wall Time | Per Pair | Bases/sec | Avg Score |
-|------------|-------|-------------|-----------|----------|-----------|-----------|
-| 100 | 1,000 | 100,000 | 8.34 ms | 8.3 us | 11,983,941 | 0.9008 |
-| 1,000 | 1,000 | 1,000,000 | 64.10 ms | 64.1 us | 15,601,111 | 0.9002 |
-| 10,000 | 100 | 1,000,000 | 69.13 ms | 691.3 us | 14,465,772 | 0.8999 |
-| 100,000 | 10 | 1,000,000 | 70.50 ms | 7.05 ms | 14,183,411 | 0.8997 |
+#### 1. Per-pair benchmark (`align_sequence` called individually)
 
-### Batch benchmark (align_sequences called once per config)
+| Size | Seq Len | Pairs | Total Bases | Avg Time | Min Time | Per Pair | Bases/sec | Score |
+|------|---------|-------|-------------|----------|----------|----------|-----------|-------|
+| Small | 100 | 1,000 | 100,000 | 12.11 ms | 11.24 ms | 11.2 us | 8,893,237 | 0.9008 |
+| Medium | 1,000 | 1,000 | 1,000,000 | 103.90 ms | 102.68 ms | 102.7 us | 9,739,460 | 0.9002 |
+| Large | 10,000 | 100 | 1,000,000 | 105.89 ms | 104.42 ms | 1.04 ms | 9,576,269 | 0.8999 |
+| Extra Large | 100,000 | 10 | 1,000,000 | 106.30 ms | 105.31 ms | 10.53 ms | 9,495,901 | 0.8997 |
 
-| Seq Length | Pairs | Total Bases | Wall Time | Per Pair | Bases/sec | Avg Score |
-|------------|-------|-------------|-----------|----------|-----------|-----------|
-| 100 | 1,000 | 100,000 | 6.83 ms | 6.8 us | 14,648,581 | 0.9008 |
-| 1,000 | 1,000 | 1,000,000 | 64.57 ms | 64.6 us | 15,487,452 | 0.9002 |
-| 10,000 | 100 | 1,000,000 | 67.53 ms | 675.3 us | 14,807,948 | 0.8999 |
-| 100,000 | 10 | 1,000,000 | 66.45 ms | 6.65 ms | 15,048,864 | 0.8997 |
+#### 2. Batch benchmark (`align_sequences` called once per config)
 
-### Summary
+| Size | Seq Len | Pairs | Total Bases | Avg Time | Min Time | Per Pair | Bases/sec | Score |
+|------|---------|-------|-------------|----------|----------|----------|-----------|-------|
+| Small | 100 | 1,000 | 100,000 | 11.86 ms | 11.30 ms | 11.3 us | 8,846,113 | 0.9008 |
+| Medium | 1,000 | 1,000 | 1,000,000 | 102.97 ms | 102.13 ms | 102.1 us | 9,791,577 | 0.9002 |
+| Large | 10,000 | 100 | 1,000,000 | 105.42 ms | 104.65 ms | 1.05 ms | 9,556,082 | 0.8999 |
+| Extra Large | 100,000 | 10 | 1,000,000 | 106.35 ms | 105.60 ms | 10.56 ms | 9,469,428 | 0.8997 |
+
+#### 3. Chunk alignment benchmark (`align_chunks` - Member 2 format)
+
+| Size | Chunk Sz | Chunks | Total Bases | Avg Time | Min Time | Per Chunk | Bases/sec | Score |
+|------|----------|--------|-------------|----------|----------|-----------|-----------|-------|
+| Small | 100 | 1,000 | 100,000 | 13.35 ms | 13.12 ms | 13.1 us | 7,623,404 | 0.2496 |
+| Medium | 1,000 | 1,000 | 1,000,000 | 124.41 ms | 121.21 ms | 121.2 us | 8,249,865 | 0.2502 |
+| Large | 5,000 | 200 | 1,000,000 | 127.54 ms | 125.56 ms | 627.8 us | 7,964,466 | 0.2499 |
+
+#### Overall Benchmark Summary
 
 | Metric | Value |
 |--------|-------|
-| Total bases aligned (per-pair) | 3,100,000 |
-| Total wall-clock time | 212.08 ms |
-| Overall throughput | ~14.6 million bases/sec |
+| Total bases per configuration set | 3,100,000 |
+| Total min wall-clock time (single) | 323.65 ms |
+| Total avg wall-clock time (single) | 328.20 ms |
+| Peak single-core throughput (best of 5) | ~9.58 million bases/sec |
+| Average single-core throughput | ~9.45 million bases/sec |
 
 ### Observations
 
-- Throughput is ~14-16 million bases/sec on a single CPU core in pure Python.
-- The short-sequence (100 bp) configuration shows lower throughput due to
-  per-call overhead dominating.  For >= 1000 bp the throughput stabilises.
-- The batch API (`align_sequences`) shows marginally better performance for
-  short sequences due to reduced Python function-call overhead.
-- Average alignment scores (~0.90) are consistent with the 10% mutation rate.
+- Python 3.13 executes single-threaded string comparison at ~9.5–9.8 Mbp/s.
+- For short sequences (100 bp), overhead of function dispatch and list appending lowers effective throughput to ~8.8 Mbp/s.
+- For sequences >= 1,000 bp, throughput stabilizes at ~9.5–9.7 Mbp/s.
+- The 10% mutation rate consistently produces average similarity scores of ~0.900.
+- This establishes the baseline for Week 2 GPU acceleration, where Numba CUDA kernels are targeted to achieve >1–10 Gbp/s.
 
-## Integration with Member 2 (Parser / Chunker)
+---
 
-**Status**: Not yet possible.
+## Day 5 -- Member 2 Integration
 
-As of Week 1, no parser, chunker, FASTA reader, or scoring module has been
-committed by Member 2.  The CPU alignment module is designed to accept the
-simplest possible interface (two equal-length `str`) so that integration
-will be straightforward once the parser produces `(reference, query)` pairs.
+### Integration Status: COMPLETE
 
-### Expected Integration Interface
+The integration between Member 2's BioPython FASTA parser / genome chunker and Member 1's CPU alignment engine is fully implemented, verified, and tested end-to-end.
 
-```python
-# Member 2 parser produces pairs:
-pairs: list[tuple[str, str]] = parser.parse_fasta("input.fasta", reference_seq)
+### Pipeline Flow
 
-# Member 1 alignment consumes them:
-results: list[AlignmentResult] = align_sequences(pairs)
+```
++------------------------------------+
+| Mock FASTA (data/mock_genome.fasta)|
++------------------------------------+
+                  |
+                  v  parse_fasta(file_path) [BioPython SeqIO]
++------------------------------------+
+| DNA Sequences (list[str])          |
++------------------------------------+
+                  |
+                  v  chunk_sequence(sequence, chunk_size)
++------------------------------------+
+| DNA Chunks (list[str])             |
++------------------------------------+
+                  |
+                  v  align_chunks(chunks, target, skip_unequal=True)
++------------------------------------+
+| Alignment Results                  |
+| (list[AlignmentResult])            |
++------------------------------------+
 ```
 
-If Member 2's parser produces a different data structure (e.g. numpy arrays,
-bytes, or variable-length sequences with gap characters), the alignment
-module's `_validate_sequence()` function will need to be adapted.
+### Component Interfaces
+
+1. **FASTA Parser (`src/parser/fasta_parser.py`)**:
+   - Input: `file_path: str | Path`
+   - Output: `list[str]` (pure Python strings representing chromosome sequences)
+   - Behavior: Uses `Bio.SeqIO.parse(file_path, "fasta")`, extracts `str(record.seq)`.
+
+2. **Genome Chunker (`src/chunking/genome_chunker.py`)**:
+   - Input: `sequence: str`, `chunk_size: int`
+   - Output: `list[str]` (subsequence chunk strings of length up to `chunk_size`)
+   - Slicing: `sequence[i:i + chunk_size]` for `i` in steps of `chunk_size`.
+
+3. **CPU Alignment Engine (`src/alignment/cpu_alignment.py`)**:
+   - Existing Core Input: `reference: str`, `query: str` (equal length)
+   - Existing Core Output: `AlignmentResult` dataclass
+
+### Interface Mismatch Analysis & Clean Adaptation
+
+| Parameter | Member 2 Output | Member 1 Alignment Expectation | Mismatch Description |
+|-----------|-----------------|-------------------------------|----------------------|
+| Structure | `list[str]` (single chunks) | `(reference, query)` pairs | Chunker produces individual genomic chunks, not alignment pairs. In CRISPR workflows, each chunk must be compared against a target guide sequence or reference window. |
+| Chunk Length | Variable at boundary | Strict equal length | The chunker slice `sequence[i:i + chunk_size]` leaves residual tail chunks when `len(sequence) % chunk_size != 0` (e.g. 45 bp with chunk size 10 produces four 10-mers and one 5-mer). `align_sequence` strictly requires equal length. |
+
+#### Clean Member 1 Adaptation:
+
+Without modifying Member 2's parser or chunker code:
+1. Implemented `align_chunks(chunks: list[str], target: str, *, skip_unequal: bool = False) -> list[AlignmentResult]`:
+   - Validates `target` sequence once upfront.
+   - Iterates through `chunks` produced by the chunker.
+   - When `skip_unequal=True`, gracefully ignores trailing partial chunks that do not match `len(target)`.
+   - When `skip_unequal=False`, adheres strictly to equal-length validation, raising `ValueError` on mismatched tail chunks.
+   - Preserves `AlignmentResult` output format and order.
+2. Implemented `align_chunk_pairs(reference_chunks: list[str], query_chunks: list[str]) -> list[AlignmentResult]` for comparative genomics where two sequences are chunked in parallel.
+3. Created `src/alignment/integration.py` (`run_pipeline`):
+   - Integrates `parse_fasta` -> `chunk_sequence` -> `align_chunks`.
+   - Validated against `data/mock_genome.fasta`.
+
+### End-to-End Pipeline Execution
+
+Command:
+```bash
+python src/alignment/integration.py
+```
+
+Output:
+```
+Processed 8 chunks against target 'ATGCGTACGT':
+  Chunk 00: matches=10, mismatches=0, score=1.00, mismatch_positions=[]
+  Chunk 01: matches=1, mismatches=9, score=0.10, mismatch_positions=[1, 2, 3, 4, 5, 6, 7, 8, 9]
+  Chunk 02: matches=4, mismatches=6, score=0.40, mismatch_positions=[0, 2, 3, 4, 7, 8]
+  Chunk 03: matches=1, mismatches=9, score=0.10, mismatch_positions=[1, 2, 3, 4, 5, 6, 7, 8, 9]
+  Chunk 04: matches=1, mismatches=9, score=0.10, mismatch_positions=[0, 1, 2, 3, 4, 5, 6, 7, 9]
+  Chunk 05: matches=6, mismatches=4, score=0.60, mismatch_positions=[0, 1, 4, 5]
+  Chunk 06: matches=2, mismatches=8, score=0.20, mismatch_positions=[1, 3, 4, 5, 6, 7, 8, 9]
+  Chunk 07: matches=4, mismatches=6, score=0.40, mismatch_positions=[0, 2, 3, 4, 7, 8]
+```
+
+### Dependencies on Member 2
+
+- `biopython` (`Bio.SeqIO`): Required for parsing FASTA files.
+- `src/parser/fasta_parser.py`: Must remain compliant with returning `list[str]`.
+- `src/chunking/genome_chunker.py`: Produces `list[str]`.
+- `data/mock_genome.fasta`: Contains mock chromosomes `chr1` (45 bp) and `chr2` (41 bp).
+
+---
 
 ## Limitations
 
-1. **Pure Python**: No C extensions, no vectorisation.  This is the
-   unoptimised baseline; the CUDA version (Week 2) will target 100-1000x
-   speedup.
-2. **Equal-length only**: Sequences must be pre-aligned / pre-chunked to
-   the same length.  Gap-aware alignment (Smith-Waterman / Needleman-Wunsch)
-   is out of scope for this baseline.
-3. **ACGT only**: Ambiguity codes (N, R, Y, ...) are rejected.  Can be
-   extended later if needed for CRISPR guide sequences.
-4. **Single-threaded**: No multiprocessing.  Parallelism will come via
-   CUDA (Week 2) and Dask (Week 3+).
+1. **Pure Python**: Single-threaded, character-by-character comparison with no SIMD/vectorization. Reference baseline for CUDA speedup.
+2. **Equal-length alignment**: Sequences must be equal in length (CRISPR target/spacer comparison model).
+3. **Canonical bases**: A, C, G, T alphabet only.
+4. **Single-threaded**: Parallelism will be added via Numba CUDA (Week 2) and Dask distributed orchestration (Week 3).

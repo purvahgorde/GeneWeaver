@@ -225,3 +225,109 @@ def align_sequences(
             f"pairs must be a list, got {type(pairs).__name__}"
         )
     return [align_sequence(ref, qry) for ref, qry in pairs]
+
+
+# ── Chunk alignment helpers (Member 2 integration) ───────────────────────
+def align_chunks(
+    chunks: list[str],
+    target: str,
+    *,
+    skip_unequal: bool = False,
+) -> list[AlignmentResult]:
+    """Align a list of genomic chunks against a target sequence on the CPU.
+
+    This function provides the integration path between Member 2's chunker
+    (which yields a list of chunk strings) and Member 1's CPU alignment.
+    In CRISPR search workflows, the ``target`` represents the guide RNA or
+    reference query, and ``chunks`` represent candidate genomic windows.
+
+    Parameters
+    ----------
+    chunks : list[str]
+        A list of DNA sequence strings (e.g. from ``chunk_sequence()``).
+    target : str
+        Target reference/query sequence to compare each chunk against.
+    skip_unequal : bool, default=False
+        If True, chunks whose length differs from ``len(target)`` (e.g.,
+        residual tail chunks at chromosome boundaries) are omitted.
+        If False, any length mismatch raises a ValueError from
+        :func:`align_sequence`.
+
+    Returns
+    -------
+    list[AlignmentResult]
+        Alignment results for each matching chunk, preserving the existing
+        ``AlignmentResult`` contract and input order.
+
+    Raises
+    ------
+    TypeError
+        If *chunks* is not a list or *target* is not a string.
+    ValueError
+        If *target* contains invalid characters, or if a chunk differs in
+        length from *target* when *skip_unequal* is False.
+    """
+    if not isinstance(chunks, list):
+        raise TypeError(f"chunks must be a list, got {type(chunks).__name__}")
+    if not isinstance(target, str):
+        raise TypeError(f"target must be a string, got {type(target).__name__}")
+
+    # Validate target once upfront
+    target_norm = _validate_sequence(target, "target")
+
+    results: list[AlignmentResult] = []
+    target_len = len(target_norm)
+
+    for chunk in chunks:
+        if not isinstance(chunk, str):
+            raise TypeError(f"Each chunk must be a string, got {type(chunk).__name__}")
+        if skip_unequal and len(chunk) != target_len:
+            continue
+        results.append(align_sequence(chunk, target_norm))
+
+    return results
+
+
+def align_chunk_pairs(
+    reference_chunks: list[str],
+    query_chunks: list[str],
+) -> list[AlignmentResult]:
+    """Align corresponding pairs of chunks from two chunk lists on the CPU.
+
+    Parameters
+    ----------
+    reference_chunks : list[str]
+        Reference sequence chunks.
+    query_chunks : list[str]
+        Query sequence chunks to compare against reference chunks.
+
+    Returns
+    -------
+    list[AlignmentResult]
+        One result per chunk pair, in order.
+
+    Raises
+    ------
+    TypeError
+        If either argument is not a list.
+    ValueError
+        If the two lists have different lengths.
+    """
+    if not isinstance(reference_chunks, list):
+        raise TypeError(
+            f"reference_chunks must be a list, got {type(reference_chunks).__name__}"
+        )
+    if not isinstance(query_chunks, list):
+        raise TypeError(
+            f"query_chunks must be a list, got {type(query_chunks).__name__}"
+        )
+    if len(reference_chunks) != len(query_chunks):
+        raise ValueError(
+            f"Chunk lists must have equal length: "
+            f"reference has {len(reference_chunks)}, query has {len(query_chunks)}."
+        )
+
+    return [
+        align_sequence(ref, qry)
+        for ref, qry in zip(reference_chunks, query_chunks)
+    ]
