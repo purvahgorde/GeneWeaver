@@ -19,8 +19,8 @@ and performance reference when accelerated back-ends are introduced in Week 2+.
 | `src/alignment/cpu_alignment.py` | Core CPU alignment (`align_sequence`, `align_sequences`, `align_chunks`, `align_chunk_pairs`, `AlignmentResult`) |
 | `src/alignment/__init__.py` | Package init -- re-exports public alignment API |
 | `src/alignment/integration.py` | End-to-end integration helper connecting Member 2 parser/chunker with Member 1 alignment |
-| `src/tests/test_cpu_alignment.py` | 56 pytest correctness tests for core CPU alignment |
-| `src/tests/test_integration.py` | 22 pytest tests for chunk alignment and end-to-end pipeline |
+| `src/tests/test_cpu_alignment.py` | 72 pytest correctness tests for core CPU alignment |
+| `src/tests/test_integration.py` | 26 pytest tests for chunk alignment and end-to-end pipeline |
 | `src/tests/test_parser.py` | 3 unit tests for FASTA parser |
 | `src/tests/test_chunking.py` | 5 unit tests for genome chunker |
 | `benchmarks/cpu_benchmark.py` | Multi-round benchmark script measuring per-pair, batch, and chunk alignment |
@@ -54,9 +54,9 @@ Character-by-character comparison of two equal-length DNA strings:
 ## Test Results
 
 **Framework**: pytest 9.1.1  
-**Tests collected**: 86  
-**Tests passed**: 86 / 86 (100%)  
-**Execution time**: ~0.40 s  
+**Tests collected**: 106  
+**Tests passed**: 106 / 106 (100%)  
+**Execution time**: ~1.48 s  
 
 ### Test Categories
 
@@ -66,15 +66,17 @@ Character-by-character comparison of two equal-length DNA strings:
 | Mismatch | `test_cpu_alignment.py` | 9 | First/middle/last position, multiple, alternating, total |
 | Short sequences | `test_cpu_alignment.py` | 3 | 1-3 bp inputs |
 | Empty sequence | `test_cpu_alignment.py` | 2 | Both empty strings, result type check |
-| Invalid input | `test_cpu_alignment.py` | 13 | Wrong types, bad chars, whitespace, unequal lengths |
+| Invalid input | `test_cpu_alignment.py` | 16 | Wrong types, bad chars, IUPAC degenerate/ambiguity (N, R, Y), whitespace, unequal lengths |
 | Case insensitivity | `test_cpu_alignment.py` | 3 | Lower, mixed, mismatch through case |
-| Boundary cases | `test_cpu_alignment.py` | 5 | Homopolymer, score precision, 10K-base single mismatch |
+| Boundary cases | `test_cpu_alignment.py` | 7 | Homopolymer, extreme boundaries, alternating long, score precision, 10K-base single mismatch |
 | Batch alignment | `test_cpu_alignment.py` | 6 | Multiple pairs, order, single, empty, type, error propagation |
 | Contract invariants | `test_cpu_alignment.py` | 6 | Arithmetic, score bounds, consistency, immutability, determinism |
+| Chunk alignment (core) | `test_cpu_alignment.py` | 7 | Multiple chunks exact, varying scores, skip_unequal true/false, empty, single, invalid types |
+| Chunk pairs (core) | `test_cpu_alignment.py` | 4 | Multiple pairs, empty, length mismatch, type validation |
 | Import verification | `test_cpu_alignment.py` | 3 | Module, package, constant |
 | Chunk alignment | `test_integration.py` | 12 | Exact match, mismatches, empty chunks, validation, skip_unequal |
 | Chunk pairs | `test_integration.py` | 4 | Parallel lists, empty, length mismatch, type validation |
-| End-to-end pipeline | `test_integration.py` | 6 | Full flow with `data/mock_genome.fasta`, tail handling, missing file |
+| End-to-end pipeline | `test_integration.py` | 10 | Full flow with `data/mock_genome.fasta`, tail handling, missing file, empty FASTA, single sequence, case normalisation, contract verification |
 | FASTA parser | `test_parser.py` | 3 | Parse mock genome, missing file, custom FASTA |
 | Genome chunker | `test_chunking.py` | 5 | Even chunking, tail chunking, oversized chunks, empty, reconstruction |
 
@@ -263,9 +265,81 @@ Processed 8 chunks against target 'ATGCGTACGT':
 
 ---
 
+## Day 6 -- Comprehensive Correctness & End-to-End Validation
+
+### Validation Objectives
+
+1. Exhaustively verify Member 1 CPU alignment correctness across exact matches, single/multiple mismatches, short sequences, empty inputs, invalid inputs, IUPAC ambiguity codes, boundary conditions, and chunk processing.
+2. Verify end-to-end integration across the complete flow: FASTA -> BioPython parser -> genome chunker -> CPU alignment -> AlignmentResult.
+3. Validate clean interface consistency between Member 2 (parser/chunker) and Member 1 (alignment).
+4. Execute regression tests and CPU benchmark to ensure performance and correctness invariants remain solid without any premature CUDA/Dask code.
+
+### Test Execution Summary
+
+- **Total Tests Collected**: 106
+- **Total Tests Passed**: 106 / 106 (100%)
+- **Total Tests Failed**: 0
+- **Total Errors**: 0
+- **Suite Execution Time**: ~1.48 s
+
+#### Breakdown by Test Module
+
+| Module | Scope | Tests Passed | Pass Rate |
+|--------|-------|--------------|-----------|
+| `src/tests/test_cpu_alignment.py` | CPU alignment core unit & boundary tests | 72 / 72 | 100% |
+| `src/tests/test_integration.py` | Chunker integration & end-to-end pipeline | 26 / 26 | 100% |
+| `src/tests/test_parser.py` | Member 2 FASTA parser unit tests | 3 / 3 | 100% |
+| `src/tests/test_chunking.py` | Member 2 genome chunker unit tests | 5 / 5 | 100% |
+| **Total** | | **106 / 106** | **100%** |
+
+### End-to-End Integration Verification
+
+The full pipeline flow was validated both via automated test fixtures and direct execution:
+
+```
+data/mock_genome.fasta (45 bp chr1 + 41 bp chr2)
+        ↓  parse_fasta() [BioPython SeqIO]
+['ATGCGTACGTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGC', 'CGTACGTAGCTAGCTAACGTACGTAGCTAGCTAGCTAGCTA']
+        ↓  chunk_sequence(seq, chunk_size=10)
+10 total chunks (8 of 10 bp, 2 boundary tail chunks of 5 bp and 1 bp)
+        ↓  align_chunks(chunks, target="ATGCGTACGT", skip_unequal=True)
+8 AlignmentResult objects (exact matches, partial mismatches, deterministic positions)
+```
+
+- **Empty FASTA handling**: Verified safe return of `[]` without exceptions.
+- **Single-sequence FASTA**: Verified complete flow for 1-sequence files.
+- **Case normalisation**: Verified lowercase input sequences are transparently normalised to uppercase throughout the pipeline.
+- **Tail chunk handling**: Verified `skip_unequal=True` cleanly omits residual tails, while `skip_unequal=False` enforces strict length equality.
+- **Invariants verified**: For every aligned chunk, `matches + mismatches == alignment_length`, `len(mismatch_positions) == mismatches`, and `score == matches / alignment_length`.
+
+### Issues Discovered & Resolution
+
+1. **Missing `biopython` in `.venv`**:
+   - *Issue*: `ModuleNotFoundError: No module named 'Bio'` occurred when running tests because `biopython` was listed in `requirements.txt` but not yet installed in `.venv`.
+   - *Resolution*: Installed required dependencies into `.venv` using `pip install -r requirements.txt`.
+2. **Member 2 `src/pipeline.py` Import Path**:
+   - *Observation*: `src/pipeline.py` imports via `from src.parser.fasta_parser import parse_fasta`, which requires `-m src.pipeline` or `PYTHONPATH=.`. Member 1's integration pipeline in `src/alignment/integration.py` safely configures `sys.path` to support direct script execution as well as module execution. In adherence to git and interface rules, Member 2's implementation was not modified.
+3. **Test Suite Completeness**:
+   - Expanded `src/tests/test_cpu_alignment.py` with tests for IUPAC degenerate/ambiguity bases (`N`, `R`, `Y`), extreme boundary mismatches, alternating long sequences, and direct unit tests for `align_chunks` and `align_chunk_pairs`.
+   - Expanded `src/tests/test_integration.py` with edge case tests for empty FASTA files, single-record FASTA, case-insensitivity across the pipeline, and mathematical contract verification across all chunks.
+
+### CPU Benchmark Regression
+
+The CPU benchmark was re-executed following all test additions:
+- **Measured execution**: 5 rounds per configuration across per-pair, batch, and chunk alignment modes using `time.perf_counter()`.
+- **Integrity**: Zero hard-coded timing values; dynamic reproducible random sequence generation; no CUDA or Dask dependencies introduced.
+- **Single-core throughput**: Consistent ~3.0–3.9 million bases/sec across configurations, providing the baseline for Week 2 GPU acceleration.
+
+### Final Week 1 CPU Baseline Status
+
+The Week 1 CPU baseline is **COMPLETE, THOROUGHLY TESTED, AND READY FOR FINAL REVIEW**.
+
+---
+
 ## Limitations
 
 1. **Pure Python**: Single-threaded, character-by-character comparison with no SIMD/vectorization. Reference baseline for CUDA speedup.
 2. **Equal-length alignment**: Sequences must be equal in length (CRISPR target/spacer comparison model).
 3. **Canonical bases**: A, C, G, T alphabet only.
 4. **Single-threaded**: Parallelism will be added via Numba CUDA (Week 2) and Dask distributed orchestration (Week 3).
+

@@ -1,21 +1,3 @@
-"""Tests for the CPU DNA alignment reference implementation.
-
-Covers:
-    - Exact matching sequences (various lengths)
-    - Single mismatch
-    - Multiple mismatches
-    - Complete mismatch (worst case)
-    - Short sequences (1-2 bases)
-    - Empty sequence handling
-    - Invalid input handling (wrong type, bad characters, unequal length)
-    - Boundary cases (homopolymer, alternating, first/last position)
-    - Batch alignment helper
-    - Case-insensitive input normalisation
-    - AlignmentResult contract invariants
-    - Determinism verification
-    - Module import verification
-"""
-
 import sys
 import os
 

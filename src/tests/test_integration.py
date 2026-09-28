@@ -1,15 +1,3 @@
-"""Tests for Member 1 & Member 2 Integration (Week 1 Day 5).
-
-Verifies the integration path:
-    FASTA file
-        ↓ (parse_fasta)
-    DNA sequence
-        ↓ (chunk_sequence)
-    DNA chunks
-        ↓ (align_chunks / align_chunk_pairs)
-    AlignmentResult
-"""
-
 from __future__ import annotations
 
 import os

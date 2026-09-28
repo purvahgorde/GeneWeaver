@@ -1,15 +1,3 @@
-"""Pipeline integration connecting Member 2's parser/chunker to Member 1's CPU alignment.
-
-End-to-end workflow:
-    FASTA file
-        ↓ (Member 2: parse_fasta)
-    DNA sequences
-        ↓ (Member 2: chunk_sequence)
-    DNA chunks
-        ↓ (Member 1: align_chunks)
-    AlignmentResult list
-"""
-
 from __future__ import annotations
 
 import sys
@@ -36,25 +24,7 @@ def run_pipeline(
     *,
     skip_unequal: bool = True,
 ) -> List[AlignmentResult]:
-    """Execute the end-to-end FASTA -> Chunker -> CPU Alignment pipeline.
-
-    Parameters
-    ----------
-    fasta_path : str or Path
-        Path to the input FASTA file.
-    target : str
-        Target DNA sequence to align each chunk against (e.g. CRISPR guide).
-    chunk_size : int
-        Size of chunks produced by the chunker.
-    skip_unequal : bool, default=True
-        Whether to omit partial tail chunks whose length differs from
-        ``len(target)``.
-
-    Returns
-    -------
-    list[AlignmentResult]
-        Alignment results for all processed chunks.
-    """
+    
     sequences = parse_fasta(fasta_path)
     all_chunks: List[str] = []
     for seq in sequences:

@@ -1,21 +1,3 @@
-"""CPU DNA Alignment Benchmark -- Week 1 Baseline.
-
-Measures wall-clock execution time of the CPU alignment implementation
-across multiple input sizes (small, medium, large, extra large) using
-realistic random DNA sequences.
-
-Usage:
-    python benchmarks/cpu_benchmark.py
-
-All timings are measured with time.perf_counter() which provides the
-highest available resolution on each platform.  Setup (sequence
-generation) is explicitly excluded from the measured alignment time.
-Each configuration is executed across multiple rounds to calculate both
-average and minimum (best-case) execution times.
-
-This script intentionally avoids GPU/CUDA/Dask imports.
-"""
-
 from __future__ import annotations
 
 import os
@@ -61,23 +43,7 @@ def generate_pair_with_mutations(
     mutation_rate: float,
     rng: random.Random,
 ) -> Tuple[str, str]:
-    """Generate a (reference, query) pair with a given mutation rate.
-
-    Parameters
-    ----------
-    length : int
-        Length of each sequence.
-    mutation_rate : float
-        Fraction of positions to mutate (0.0 – 1.0).
-    rng : random.Random
-        Seeded RNG for reproducibility.
-
-    Returns
-    -------
-    tuple[str, str]
-        (reference, query) where query has ~mutation_rate fraction of
-        bases changed relative to reference.
-    """
+    
     ref = generate_random_dna(length, rng)
     query_chars = list(ref)
     for i in range(length):
