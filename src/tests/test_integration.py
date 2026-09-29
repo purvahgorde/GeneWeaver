@@ -210,3 +210,37 @@ class TestEndToEndPipeline:
     def test_missing_fasta_file_raises_not_found(self):
         with pytest.raises(FileNotFoundError):
             run_pipeline("nonexistent_file.fasta", "ACGT", 10)
+
+    def test_end_to_end_empty_fasta(self, tmp_path):
+        """Empty FASTA file should produce zero alignment results without error."""
+        empty_fasta = tmp_path / "empty.fasta"
+        empty_fasta.write_text("")
+        results = run_pipeline(empty_fasta, "ACGT", 4)
+        assert results == []
+
+    def test_end_to_end_single_sequence(self, tmp_path):
+        """Single-sequence FASTA should process through the full pipeline."""
+        single_fasta = tmp_path / "single.fasta"
+        single_fasta.write_text(">seq1\nACGTACGT\n")
+        results = run_pipeline(single_fasta, "ACGT", 4)
+        assert len(results) == 2
+        assert all(isinstance(r, AlignmentResult) for r in results)
+        assert all(r.matches == 4 for r in results)
+
+    def test_end_to_end_case_normalisation(self, tmp_path):
+        """Lowercase FASTA sequences should be transparently normalised."""
+        lower_fasta = tmp_path / "lower.fasta"
+        lower_fasta.write_text(">seq1\nacgtacgt\n")
+        results = run_pipeline(lower_fasta, "acgt", 4)
+        assert len(results) == 2
+        assert all(r.score == 1.0 for r in results)
+
+    def test_end_to_end_invariants_verification(self, mock_fasta_path):
+        """Mathematical invariants must hold across all chunks in the pipeline."""
+        target = "ATGCGTACGT"
+        results = run_pipeline(mock_fasta_path, target, chunk_size=10, skip_unequal=True)
+        assert len(results) > 0
+        for r in results:
+            assert r.matches + r.mismatches == r.alignment_length == 10
+            assert len(r.mismatch_positions) == r.mismatches
+            assert r.score == pytest.approx(r.matches / r.alignment_length)

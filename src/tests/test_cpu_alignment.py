@@ -10,6 +10,8 @@ from alignment.cpu_alignment import (
     AlignmentResult,
     align_sequence,
     align_sequences,
+    align_chunks,
+    align_chunk_pairs,
     VALID_BASES,
 )
 
@@ -232,6 +234,18 @@ class TestInvalidInput:
         with pytest.raises(ValueError, match="equal length"):
             align_sequence("", "A")
 
+    def test_invalid_characters_iupac_ambiguity_n(self):
+        with pytest.raises(ValueError, match="invalid characters"):
+            align_sequence("ACGN", "ACGT")
+
+    def test_invalid_characters_iupac_ambiguity_r_y(self):
+        with pytest.raises(ValueError, match="invalid characters"):
+            align_sequence("ACGR", "ACGY")
+
+    def test_invalid_characters_query_iupac(self):
+        with pytest.raises(ValueError, match="invalid characters"):
+            align_sequence("ACGT", "ACGS")
+
 
 # ═════════════════════════════════════════════════════════════════════════
 #  Case-insensitivity tests
@@ -294,6 +308,28 @@ class TestBoundaryCases:
         """mismatches field must equal len(mismatch_positions) always."""
         result = align_sequence("ACGTACGT", "TCGATCGA")
         assert result.mismatches == len(result.mismatch_positions)
+
+    def test_alternating_long_sequence(self):
+        """1 000 bases with alternating mismatch pattern."""
+        ref = "AC" * 500
+        qry = "AG" * 500  # mismatches at odd positions 1, 3, 5, ..., 999
+        result = align_sequence(ref, qry)
+        assert result.matches == 500
+        assert result.mismatches == 500
+        assert result.score == 0.5
+        assert result.mismatch_positions == list(range(1, 1000, 2))
+
+    def test_extreme_boundary_first_and_last_mismatch(self):
+        """100 bases with mismatches only at position 0 and 99."""
+        ref_list = list("A" * 100)
+        qry_list = list("A" * 100)
+        qry_list[0] = "C"
+        qry_list[99] = "G"
+        result = align_sequence("".join(ref_list), "".join(qry_list))
+        assert result.matches == 98
+        assert result.mismatches == 2
+        assert result.score == 0.98
+        assert result.mismatch_positions == [0, 99]
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -391,6 +427,82 @@ class TestAlignmentResultContract:
 
 
 # ═════════════════════════════════════════════════════════════════════════
+#  Chunk alignment core tests
+# ═════════════════════════════════════════════════════════════════════════
+class TestAlignChunksCore:
+    """Unit tests for align_chunks helper in cpu_alignment."""
+
+    def test_align_chunks_exact_match(self):
+        chunks = ["ACGT", "ACGT"]
+        results = align_chunks(chunks, "ACGT")
+        assert len(results) == 2
+        assert all(r.score == 1.0 for r in results)
+
+    def test_align_chunks_varying_scores(self):
+        chunks = ["ACGT", "ACGA", "TGCA"]
+        results = align_chunks(chunks, "ACGT")
+        assert len(results) == 3
+        assert results[0].score == 1.0
+        assert results[1].score == 0.75
+        assert results[2].score == 0.0
+
+    def test_align_chunks_skip_unequal_true(self):
+        chunks = ["ACGT", "ACG", "ACGT"]
+        results = align_chunks(chunks, "ACGT", skip_unequal=True)
+        assert len(results) == 2
+        assert all(r.alignment_length == 4 for r in results)
+
+    def test_align_chunks_skip_unequal_false_raises(self):
+        chunks = ["ACGT", "ACG"]
+        with pytest.raises(ValueError, match="equal length"):
+            align_chunks(chunks, "ACGT", skip_unequal=False)
+
+    def test_align_chunks_empty_list(self):
+        results = align_chunks([], "ACGT")
+        assert results == []
+
+    def test_align_chunks_single_chunk(self):
+        results = align_chunks(["ACGT"], "ACGT")
+        assert len(results) == 1
+        assert results[0].matches == 4
+
+    def test_align_chunks_invalid_types(self):
+        with pytest.raises(TypeError):
+            align_chunks("not a list", "ACGT")
+        with pytest.raises(TypeError):
+            align_chunks(["ACGT"], 123)
+
+
+# ═════════════════════════════════════════════════════════════════════════
+#  Chunk pairs core tests
+# ═════════════════════════════════════════════════════════════════════════
+class TestAlignChunkPairsCore:
+    """Unit tests for align_chunk_pairs helper in cpu_alignment."""
+
+    def test_align_chunk_pairs_matching(self):
+        ref_chunks = ["ACGT", "GGCC"]
+        qry_chunks = ["ACGT", "GGCA"]
+        results = align_chunk_pairs(ref_chunks, qry_chunks)
+        assert len(results) == 2
+        assert results[0].score == 1.0
+        assert results[1].mismatches == 1
+
+    def test_align_chunk_pairs_empty(self):
+        results = align_chunk_pairs([], [])
+        assert results == []
+
+    def test_align_chunk_pairs_length_mismatch(self):
+        with pytest.raises(ValueError, match="equal length"):
+            align_chunk_pairs(["ACGT"], ["ACGT", "GGCC"])
+
+    def test_align_chunk_pairs_type_validation(self):
+        with pytest.raises(TypeError):
+            align_chunk_pairs("not a list", ["ACGT"])
+        with pytest.raises(TypeError):
+            align_chunk_pairs(["ACGT"], "not a list")
+
+
+# ═════════════════════════════════════════════════════════════════════════
 #  Import verification
 # ═════════════════════════════════════════════════════════════════════════
 class TestImport:
@@ -400,6 +512,8 @@ class TestImport:
         from alignment import cpu_alignment  # noqa: F811
         assert hasattr(cpu_alignment, "align_sequence")
         assert hasattr(cpu_alignment, "align_sequences")
+        assert hasattr(cpu_alignment, "align_chunks")
+        assert hasattr(cpu_alignment, "align_chunk_pairs")
         assert hasattr(cpu_alignment, "AlignmentResult")
 
     def test_package_level_imports(self):

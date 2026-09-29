@@ -1,8 +1,13 @@
+"""Integration pipeline connecting Member 2's parser/chunker with Member 1's CPU alignment.
+
+Provides an end-to-end execution path:
+FASTA file -> BioPython SeqIO parser -> Genome chunker -> CPU chunk alignment.
+"""
+
 from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import List
 
 # Ensure src/ is importable
 SRC_DIR = Path(__file__).resolve().parent.parent
@@ -23,10 +28,32 @@ def run_pipeline(
     chunk_size: int,
     *,
     skip_unequal: bool = True,
-) -> List[AlignmentResult]:
-    
+) -> list[AlignmentResult]:
+    """Execute the end-to-end Week 1 DNA alignment pipeline.
+
+    Parses a FASTA file using Member 2's parser, partitions all sequences into
+    windows of size `chunk_size` using Member 2's genome chunker, and aligns
+    each resulting chunk against `target` using Member 1's CPU alignment engine.
+
+    Parameters
+    ----------
+    fasta_path : str | Path
+        Path to the input FASTA file.
+    target : str
+        Target DNA sequence to align each genomic chunk against (e.g. guide RNA).
+    chunk_size : int
+        Window size in bases for genome chunking.
+    skip_unequal : bool, default=True
+        If True, residual tail chunks whose length differs from len(target)
+        are skipped. If False, any length mismatch raises a ValueError.
+
+    Returns
+    -------
+    list[AlignmentResult]
+        Alignment results for each chunk, preserving chunk order.
+    """
     sequences = parse_fasta(fasta_path)
-    all_chunks: List[str] = []
+    all_chunks: list[str] = []
     for seq in sequences:
         chunks = chunk_sequence(seq, chunk_size)
         all_chunks.extend(chunks)

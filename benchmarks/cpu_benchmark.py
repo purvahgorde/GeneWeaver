@@ -43,7 +43,22 @@ def generate_pair_with_mutations(
     mutation_rate: float,
     rng: random.Random,
 ) -> Tuple[str, str]:
-    
+    """Generate a (reference, query) pair where the query has random mutations.
+
+    Parameters
+    ----------
+    length : int
+        Sequence length in base pairs.
+    mutation_rate : float
+        Probability of mutation at each position.
+    rng : random.Random
+        Seeded random number generator for reproducibility.
+
+    Returns
+    -------
+    Tuple[str, str]
+        Tuple of (reference_sequence, mutated_query_sequence).
+    """
     ref = generate_random_dna(length, rng)
     query_chars = list(ref)
     for i in range(length):

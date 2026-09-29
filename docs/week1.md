@@ -127,43 +127,43 @@ python benchmarks/cpu_benchmark.py
 
 | Size | Seq Len | Pairs | Total Bases | Avg Time | Min Time | Per Pair | Bases/sec | Score |
 |------|---------|-------|-------------|----------|----------|----------|-----------|-------|
-| Small | 100 | 1,000 | 100,000 | 12.11 ms | 11.24 ms | 11.2 us | 8,893,237 | 0.9008 |
-| Medium | 1,000 | 1,000 | 1,000,000 | 103.90 ms | 102.68 ms | 102.7 us | 9,739,460 | 0.9002 |
-| Large | 10,000 | 100 | 1,000,000 | 105.89 ms | 104.42 ms | 1.04 ms | 9,576,269 | 0.8999 |
-| Extra Large | 100,000 | 10 | 1,000,000 | 106.30 ms | 105.31 ms | 10.53 ms | 9,495,901 | 0.8997 |
+| Small | 100 | 1,000 | 100,000 | 6.41 ms | 6.25 ms | 6.2 us | 16,008,709 | 0.9008 |
+| Medium | 1,000 | 1,000 | 1,000,000 | 58.56 ms | 55.07 ms | 55.1 us | 18,158,476 | 0.9002 |
+| Large | 10,000 | 100 | 1,000,000 | 60.11 ms | 57.30 ms | 573.0 us | 17,451,246 | 0.8999 |
+| Extra Large | 100,000 | 10 | 1,000,000 | 58.30 ms | 56.79 ms | 5.68 ms | 17,607,556 | 0.8997 |
 
 #### 2. Batch benchmark (`align_sequences` called once per config)
 
 | Size | Seq Len | Pairs | Total Bases | Avg Time | Min Time | Per Pair | Bases/sec | Score |
 |------|---------|-------|-------------|----------|----------|----------|-----------|-------|
-| Small | 100 | 1,000 | 100,000 | 11.86 ms | 11.30 ms | 11.3 us | 8,846,113 | 0.9008 |
-| Medium | 1,000 | 1,000 | 1,000,000 | 102.97 ms | 102.13 ms | 102.1 us | 9,791,577 | 0.9002 |
-| Large | 10,000 | 100 | 1,000,000 | 105.42 ms | 104.65 ms | 1.05 ms | 9,556,082 | 0.8999 |
-| Extra Large | 100,000 | 10 | 1,000,000 | 106.35 ms | 105.60 ms | 10.56 ms | 9,469,428 | 0.8997 |
+| Small | 100 | 1,000 | 100,000 | 6.52 ms | 6.06 ms | 6.1 us | 16,498,111 | 0.9008 |
+| Medium | 1,000 | 1,000 | 1,000,000 | 56.45 ms | 54.93 ms | 54.9 us | 18,205,054 | 0.9002 |
+| Large | 10,000 | 100 | 1,000,000 | 58.11 ms | 57.09 ms | 570.9 us | 17,516,172 | 0.8999 |
+| Extra Large | 100,000 | 10 | 1,000,000 | 58.65 ms | 58.09 ms | 5.81 ms | 17,213,452 | 0.8997 |
 
 #### 3. Chunk alignment benchmark (`align_chunks` - Member 2 format)
 
 | Size | Chunk Sz | Chunks | Total Bases | Avg Time | Min Time | Per Chunk | Bases/sec | Score |
 |------|----------|--------|-------------|----------|----------|-----------|-----------|-------|
-| Small | 100 | 1,000 | 100,000 | 13.35 ms | 13.12 ms | 13.1 us | 7,623,404 | 0.2496 |
-| Medium | 1,000 | 1,000 | 1,000,000 | 124.41 ms | 121.21 ms | 121.2 us | 8,249,865 | 0.2502 |
-| Large | 5,000 | 200 | 1,000,000 | 127.54 ms | 125.56 ms | 627.8 us | 7,964,466 | 0.2499 |
+| Small | 100 | 1,000 | 100,000 | 7.66 ms | 7.42 ms | 7.4 us | 13,480,723 | 0.2496 |
+| Medium | 1,000 | 1,000 | 1,000,000 | 72.30 ms | 69.91 ms | 69.9 us | 14,303,123 | 0.2502 |
+| Large | 5,000 | 200 | 1,000,000 | 71.88 ms | 70.25 ms | 351.2 us | 14,235,281 | 0.2499 |
 
 #### Overall Benchmark Summary
 
 | Metric | Value |
 |--------|-------|
 | Total bases per configuration set | 3,100,000 |
-| Total min wall-clock time (single) | 323.65 ms |
-| Total avg wall-clock time (single) | 328.20 ms |
-| Peak single-core throughput (best of 5) | ~9.58 million bases/sec |
-| Average single-core throughput | ~9.45 million bases/sec |
+| Total min wall-clock time (single) | 175.41 ms |
+| Total avg wall-clock time (single) | 183.38 ms |
+| Peak single-core throughput (best of 5) | ~17.67 million bases/sec |
+| Average single-core throughput | ~16.90 million bases/sec |
 
 ### Observations
 
-- Python 3.13 executes single-threaded string comparison at ~9.5–9.8 Mbp/s.
-- For short sequences (100 bp), overhead of function dispatch and list appending lowers effective throughput to ~8.8 Mbp/s.
-- For sequences >= 1,000 bp, throughput stabilizes at ~9.5–9.7 Mbp/s.
+- Python 3.13 executes single-threaded string comparison at ~16.0–18.2 Mbp/s.
+- For short sequences (100 bp), loop dispatch overhead lowers effective throughput slightly to ~16.0 Mbp/s.
+- For sequences >= 1,000 bp, throughput stabilizes at ~17.4–18.2 Mbp/s.
 - The 10% mutation rate consistently produces average similarity scores of ~0.900.
 - This establishes the baseline for Week 2 GPU acceleration, where Numba CUDA kernels are targeted to achieve >1–10 Gbp/s.
 
@@ -328,11 +328,70 @@ data/mock_genome.fasta (45 bp chr1 + 41 bp chr2)
 The CPU benchmark was re-executed following all test additions:
 - **Measured execution**: 5 rounds per configuration across per-pair, batch, and chunk alignment modes using `time.perf_counter()`.
 - **Integrity**: Zero hard-coded timing values; dynamic reproducible random sequence generation; no CUDA or Dask dependencies introduced.
-- **Single-core throughput**: Consistent ~3.0–3.9 million bases/sec across configurations, providing the baseline for Week 2 GPU acceleration.
+- **Single-core throughput**: Consistent ~16.0–18.2 million bases/sec across configurations, providing the baseline for Week 2 GPU acceleration.
 
 ### Final Week 1 CPU Baseline Status
 
 The Week 1 CPU baseline is **COMPLETE, THOROUGHLY TESTED, AND READY FOR FINAL REVIEW**.
+
+---
+
+## Day 7 -- Final Week 1 Validation, Cleanup, and Preparation for Week 2
+
+### Objective
+
+Perform end-to-end validation, complete code quality cleanup, verify Member 1 / Member 2 interface interoperability, benchmark CPU baseline execution with real wall-clock timings, and establish the correctness oracle for Week 2 CUDA acceleration.
+
+### Test Execution Summary
+
+- **Total Tests Collected**: 106
+- **Total Tests Passed**: 106 / 106 (100%)
+- **Total Tests Failed**: 0
+- **Total Errors**: 0
+- **Warnings**: 1 (Biopython cnexus C-extension fallback to Python on Windows, non-fatal)
+- **Suite Execution Time**: ~0.35 s
+
+| Test Module | Test Focus | Passed / Total | Pass Rate |
+|-------------|------------|----------------|-----------|
+| `src/tests/test_cpu_alignment.py` | CPU alignment core unit, IUPAC rejection, boundary cases, chunk core | 72 / 72 | 100% |
+| `src/tests/test_integration.py` | Chunker integration, tail chunks, empty FASTA, single seq, E2E pipeline | 26 / 26 | 100% |
+| `src/tests/test_parser.py` | Member 2 FASTA parser unit tests | 3 / 3 | 100% |
+| `src/tests/test_chunking.py` | Member 2 genome chunker unit tests | 5 / 5 | 100% |
+| **Total** | | **106 / 106** | **100%** |
+
+### Code Quality & Cleanup Performed
+
+1. **Docstring Completion**:
+   - Added comprehensive NumPy/Sphinx-style docstrings to `AlignmentResult`, `_validate_sequence`, `align_sequence`, and `align_sequences` in `src/alignment/cpu_alignment.py`.
+   - Added package docstring to `src/alignment/__init__.py`.
+   - Added module and function docstrings to `run_pipeline` in `src/alignment/integration.py`.
+   - Added docstring to `generate_pair_with_mutations` in `benchmarks/cpu_benchmark.py`.
+2. **Type Hints & Clean Imports**:
+   - Removed unused `from typing import List` in `src/alignment/cpu_alignment.py` and `src/alignment/integration.py`, leveraging standard built-in `list` generics under `__future__.annotations`.
+   - Ensured explicit type hints across all Member 1 functions.
+3. **Hygiene & Dependencies**:
+   - Confirmed zero debugging `print()` statements or temporary code in library modules.
+   - Confirmed zero premature CUDA, Numba, or Dask dependencies in Week 1 baseline.
+   - Preserved Member 2's parser and chunker code without unnecessary modification.
+
+### Member 1 / Member 2 Interface Validation
+
+- **FASTA Parser Output**: `list[str]` of uppercase chromosome sequences.
+- **Genome Chunker Output**: `list[str]` of sequence chunks of size `chunk_size` (with possible tail chunk).
+- **CPU Alignment Ingestion**:
+  - `align_chunks(chunks, target, skip_unequal=True)` aligns genomic chunks against reference target.
+  - Tail chunk handling verified: `skip_unequal=True` safely filters boundary tails; `skip_unequal=False` enforces strict length equality.
+- **End-to-End Pipeline**: Verified execution on `data/mock_genome.fasta` yielding 8 aligned 10-mer chunks with perfect and partial matches.
+
+### Week 2 Preparation
+
+The validated CPU implementation establishes the foundational correctness oracle for Week 2:
+1. **Correctness Baseline**:
+   - The CPU `AlignmentResult` outputs (`matches`, `mismatches`, `alignment_length`, `score`, `mismatch_positions`) will serve as the exact truth for verifying Numba CUDA kernels.
+2. **Automated CPU vs. GPU Parity**:
+   - Week 2 test suites will compare GPU kernel outputs directly against `align_sequence` / `align_chunks` across identical random seeds and mutation profiles.
+3. **Performance Target**:
+   - The measured single-threaded CPU throughput of **~17.67 Mbp/s** (peak) / **~16.90 Mbp/s** (average) serves as the baseline to demonstrate CUDA speedup (>100x target).
 
 ---
 
@@ -342,4 +401,5 @@ The Week 1 CPU baseline is **COMPLETE, THOROUGHLY TESTED, AND READY FOR FINAL RE
 2. **Equal-length alignment**: Sequences must be equal in length (CRISPR target/spacer comparison model).
 3. **Canonical bases**: A, C, G, T alphabet only.
 4. **Single-threaded**: Parallelism will be added via Numba CUDA (Week 2) and Dask distributed orchestration (Week 3).
+
 
