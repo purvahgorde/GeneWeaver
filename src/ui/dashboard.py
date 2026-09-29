@@ -2,7 +2,6 @@ from textual.app import App, ComposeResult
 from textual.widgets import Header, Footer, Static, ProgressBar, Button
 
 from src.pipeline import process_genome
-from src.parser.fasta_parser import parse_fasta
 
 
 class GeneWeaverApp(App):
@@ -23,8 +22,7 @@ class GeneWeaverApp(App):
         """Load genome data and update sequence/chunk counts."""
         file_path = "data/mock_genome.fasta"
 
-        sequences = parse_fasta(file_path)
-        chunks = process_genome(file_path, 10)
+        sequences, chunks = process_genome(file_path, 10)
 
         self.sequence_count = len(sequences)
         self.chunk_count = len(chunks)
@@ -35,10 +33,9 @@ class GeneWeaverApp(App):
         sequences_widget.update(
             f"Sequences: {self.sequence_count}"
         )
-
         chunks_widget.update(
             f"Chunks: {self.chunk_count}"
-        )
+    )
 
     def update_progress(self) -> None:
         """Update alignment progress step by step."""
