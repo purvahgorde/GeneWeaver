@@ -10,6 +10,16 @@ from .cpu_alignment import (
     align_chunk_pairs,
     AlignmentResult,
 )
+from .cuda_alignment import (
+    cuda_align_sequence,
+    cuda_align_sequences,
+    cuda_align_sequences_timed,
+    cuda_align_chunks,
+    is_cuda_available,
+    get_cuda_device_info,
+    CUDANotAvailableError,
+    CUDATimingBreakdown,
+)
 
 __all__ = [
     "align_sequence",
@@ -17,5 +27,13 @@ __all__ = [
     "align_chunks",
     "align_chunk_pairs",
     "AlignmentResult",
+    "cuda_align_sequence",
+    "cuda_align_sequences",
+    "cuda_align_sequences_timed",
+    "cuda_align_chunks",
+    "is_cuda_available",
+    "get_cuda_device_info",
+    "CUDANotAvailableError",
+    "CUDATimingBreakdown",
 ]
 
