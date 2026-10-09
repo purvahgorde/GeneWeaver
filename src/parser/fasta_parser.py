@@ -8,12 +8,11 @@ def parse_fasta(file_path):
     if not file_path.exists():
         raise FileNotFoundError(f"FASTA file not found: {file_path}")
 
-    records = SeqIO.parse(file_path, "fasta")
-
     sequences = []
-
-    for record in records:
-        sequences.append(str(record.seq))
+    with open(file_path, "r", encoding="utf-8") as handle:
+        records = SeqIO.parse(handle, "fasta")
+        for record in records:
+            sequences.append(str(record.seq))
 
     return sequences
 

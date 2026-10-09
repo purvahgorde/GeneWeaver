@@ -35,6 +35,8 @@ from alignment.cuda_alignment import (
     cuda_align_sequences,
     cuda_align_sequences_timed,
     cuda_align_chunks,
+    cuda_align_chunks_timed,
+    cuda_align_chunk_pairs,
     is_cuda_available,
     get_cuda_device_info,
     CUDANotAvailableError,
@@ -88,6 +90,25 @@ class TestCUDAHostPreparation:
             _prepare_host_buffers([("ACGT", "ACGT"), ("ACG", "ACG")])
 
 
+    def test_prepare_host_buffers_invalid_type(self):
+        with pytest.raises(TypeError, match="pairs must be a list or tuple"):
+            _prepare_host_buffers("not a list")  # type: ignore
+
+    def test_prepare_host_buffers_invalid_element_structure(self):
+        with pytest.raises(TypeError, match="Each pair must be a 2-element tuple/list"):
+            _prepare_host_buffers(["ACGT"])  # type: ignore
+
+        with pytest.raises(TypeError, match="Each pair must be a 2-element tuple/list"):
+            _prepare_host_buffers([("ACGT", "ACGT", "EXTRA")])  # type: ignore
+
+    def test_prepare_host_buffers_empty_strings(self):
+        refs_flat, qrys_flat, seq_len, n_pairs = _prepare_host_buffers([("", "")])
+        assert seq_len == 0
+        assert n_pairs == 1
+        assert len(refs_flat) == 0
+        assert len(qrys_flat) == 0
+
+
 # ═════════════════════════════════════════════════════════════════════════
 #  CUDA Availability and Safe Fallback Behavior
 # ═════════════════════════════════════════════════════════════════════════
@@ -117,7 +138,66 @@ class TestCUDAAvailabilityAndFallback:
                 cuda_align_chunks(["ACGT"], "ACGT")
 
             with pytest.raises(CUDANotAvailableError):
+                cuda_align_chunks_timed(["ACGT"], "ACGT")
+
+            with pytest.raises(CUDANotAvailableError):
+                cuda_align_chunk_pairs(["ACGT"], ["ACGT"])
+
+            with pytest.raises(CUDANotAvailableError):
                 cuda_align_sequences_timed([("ACGT", "ACGT")])
+
+    def test_threads_per_block_validation(self):
+        """threads_per_block must be validated before attempting kernel execution."""
+        with pytest.raises(TypeError, match="threads_per_block must be an integer"):
+            cuda_align_sequences_timed([], threads_per_block="invalid")  # type: ignore
+
+        with pytest.raises(ValueError, match="threads_per_block must be positive"):
+            cuda_align_sequences_timed([], threads_per_block=0)
+
+        with pytest.raises(ValueError, match="threads_per_block must be positive"):
+            cuda_align_sequences_timed([], threads_per_block=-32)
+
+    def test_empty_pairs_preserves_contract_when_cuda_unavailable(self):
+        """When CUDA is unavailable, calling cuda_align_sequences cleanly raises CUDANotAvailableError."""
+        if not is_cuda_available():
+            with pytest.raises(CUDANotAvailableError):
+                cuda_align_sequences_timed([])
+            with pytest.raises(CUDANotAvailableError):
+                cuda_align_sequences([])
+
+    def test_chunk_pairs_type_validation_without_cuda(self):
+        """Type validation for chunk pairs occurs before GPU execution."""
+        with pytest.raises(TypeError, match="reference_chunks must be a list"):
+            cuda_align_chunk_pairs("not a list", ["ACGT"])  # type: ignore
+
+        with pytest.raises(TypeError, match="query_chunks must be a list"):
+            cuda_align_chunk_pairs(["ACGT"], "not a list")  # type: ignore
+
+        with pytest.raises(ValueError, match="Chunk lists must have equal length"):
+            cuda_align_chunk_pairs(["ACGT"], ["ACGT", "GGCC"])
+
+        with pytest.raises(TypeError, match="must be a string"):
+            cuda_align_chunk_pairs([123], ["ACGT"])  # type: ignore
+
+        with pytest.raises(TypeError, match="must be a string"):
+            cuda_align_chunk_pairs(["ACGT"], [456])  # type: ignore
+
+    def test_align_chunks_type_validation_without_cuda(self):
+        """Type validation for chunks occurs before GPU execution."""
+        with pytest.raises(TypeError, match="chunks must be a list"):
+            cuda_align_chunks("not a list", "ACGT")  # type: ignore
+
+        with pytest.raises(TypeError, match="target must be a string"):
+            cuda_align_chunks(["ACGT"], 123)  # type: ignore
+
+        with pytest.raises(TypeError, match="Each chunk must be a string"):
+            cuda_align_chunks([123], "ACGT")  # type: ignore
+
+        with pytest.raises(ValueError, match="target contains invalid characters"):
+            cuda_align_chunks(["ACGT"], "ACGN")
+
+        with pytest.raises(ValueError, match="Sequences must have equal length"):
+            cuda_align_chunks(["ACGT", "ACG"], "ACGT", skip_unequal=False)
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -210,6 +290,26 @@ class TestCUDAAlignmentParityWithCPU:
         for cpu_res, gpu_res in zip(cpu_results, gpu_results):
             assert gpu_res == cpu_res
 
+    def test_cuda_align_chunks_timed(self):
+        target = "ACGT"
+        chunks = ["ACGT", "TCGT", "TGCA", "AAAA"]
+        cpu_results = align_chunks(chunks, target)
+        gpu_results, timing = cuda_align_chunks_timed(chunks, target)
+        assert len(gpu_results) == len(cpu_results)
+        for cpu_res, gpu_res in zip(cpu_results, gpu_results):
+            assert gpu_res == cpu_res
+        assert isinstance(timing, CUDATimingBreakdown)
+        assert timing.total_wall_time >= 0.0
+
+    def test_cuda_align_chunk_pairs(self):
+        ref_chunks = ["ACGT", "TCGT", "TGCA", "AAAA"]
+        qry_chunks = ["ACGT", "ACGT", "TGCA", "TTTT"]
+        cpu_results = align_sequences(list(zip(ref_chunks, qry_chunks)))
+        gpu_results = cuda_align_chunk_pairs(ref_chunks, qry_chunks)
+        assert len(gpu_results) == len(cpu_results)
+        for cpu_res, gpu_res in zip(cpu_results, gpu_results):
+            assert gpu_res == cpu_res
+
     def test_empty_sequence_alignment(self):
         cpu_res = align_sequence("", "")
         gpu_res = cuda_align_sequence("", "")
@@ -230,3 +330,25 @@ class TestCUDAAlignmentParityWithCPU:
         assert isinstance(timing, CUDATimingBreakdown)
         assert timing.total_wall_time >= 0.0
         assert timing.kernel_execution_time >= 0.0
+
+    def test_repeated_execution_determinism(self):
+        """Repeated executions with identical inputs produce identical deterministic outputs."""
+        pairs = [("ACGTACGT", "ACGTTCGT"), ("GATTACA", "GATTACA")]
+        cpu_results = align_sequences(pairs)
+        for _ in range(5):
+            gpu_results = cuda_align_sequences(pairs)
+            assert gpu_results == cpu_results
+
+    def test_alignment_contract_invariants(self):
+        """Mathematical invariants hold for CUDA alignment outputs."""
+        pairs = [
+            ("ACGTACGT", "TCGTACGA"),
+            ("AAAAAAAAAAAAAAAAAAAA", "TTTTTTTTTTTTTTTTTTTT"),
+            ("ACGT", "ACGT"),
+        ]
+        results = cuda_align_sequences(pairs)
+        for res, (ref, _) in zip(results, pairs):
+            assert res.matches + res.mismatches == res.alignment_length == len(ref)
+            assert len(res.mismatch_positions) == res.mismatches
+            assert 0.0 <= res.score <= 1.0
+            assert res.score == pytest.approx(res.matches / res.alignment_length)

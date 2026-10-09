@@ -43,7 +43,13 @@ try:
         cuda = _cuda
         CUDA_AVAILABLE = True
     else:
-        CUDA_IMPORT_ERROR = "Numba detected no available CUDA devices or driver library."
+        # Check if driver is available but compiler library (NVVM) is missing
+        if hasattr(_cuda, "cudadrv") and hasattr(_cuda.cudadrv, "driver") and _cuda.cudadrv.driver.driver.is_available:
+            CUDA_IMPORT_ERROR = (
+                "Numba detected CUDA driver and device, but CUDA compiler library (libNVVM/nvvm.dll) is not available."
+            )
+        else:
+            CUDA_IMPORT_ERROR = "Numba detected no available CUDA devices or driver library."
 except Exception as _exc:  # pragma: no cover
     CUDA_IMPORT_ERROR = f"{type(_exc).__name__}: {_exc}"
 
@@ -90,13 +96,26 @@ def is_cuda_available() -> bool:
     return CUDA_AVAILABLE
 
 
-def get_cuda_device_info() -> dict[str, str | int]:
+def get_cuda_device_info() -> dict[str, str | int | bool]:
     """Retrieve details about the active CUDA environment or failure reason."""
     if not CUDA_AVAILABLE:
-        return {
+        info: dict[str, str | int | bool] = {
             "available": False,
             "reason": CUDA_IMPORT_ERROR or "CUDA not available",
         }
+        try:
+            from numba import cuda as _nc
+            if hasattr(_nc, "cudadrv") and hasattr(_nc.cudadrv, "driver") and _nc.cudadrv.driver.driver.is_available:
+                dev = _nc.cudadrv.driver.driver.get_device(0)
+                name = dev.name.decode("utf-8") if isinstance(dev.name, bytes) else str(dev.name)
+                cc = f"{dev.compute_capability[0]}.{dev.compute_capability[1]}"
+                info["driver_available"] = True
+                info["detected_device"] = name
+                info["compute_capability"] = cc
+        except Exception:
+            pass
+        return info
+
     try:
         dev = cuda.get_current_device()
         return {
@@ -183,13 +202,21 @@ def _prepare_host_buffers(
     tuple[np.ndarray, np.ndarray, int, int]
         (refs_flat, qrys_flat, seq_len, n_pairs)
     """
+    if not isinstance(pairs, (list, tuple)):
+        raise TypeError(f"pairs must be a list or tuple, got {type(pairs).__name__}")
+
     n_pairs = len(pairs)
     if n_pairs == 0:
         return np.empty(0, dtype=np.uint8), np.empty(0, dtype=np.uint8), 0, 0
 
     # Validate first pair to establish batch sequence length
-    ref0 = _validate_sequence(pairs[0][0], "reference")
-    qry0 = _validate_sequence(pairs[0][1], "query")
+    first_item = pairs[0]
+    if not isinstance(first_item, (tuple, list)) or len(first_item) != 2:
+        raise TypeError(
+            f"Each pair must be a 2-element tuple/list of strings, got {type(first_item).__name__}"
+        )
+    ref0 = _validate_sequence(first_item[0], "reference")
+    qry0 = _validate_sequence(first_item[1], "query")
     if len(ref0) != len(qry0):
         raise ValueError(
             f"Sequences must have equal length: "
@@ -208,8 +235,13 @@ def _prepare_host_buffers(
     qrys_buf[0] = _encode_sequence_ascii(qry0)
 
     for idx in range(1, n_pairs):
-        ref_seq = _validate_sequence(pairs[idx][0], f"reference at pair {idx}")
-        qry_seq = _validate_sequence(pairs[idx][1], f"query at pair {idx}")
+        item = pairs[idx]
+        if not isinstance(item, (tuple, list)) or len(item) != 2:
+            raise TypeError(
+                f"Each pair must be a 2-element tuple/list of strings, got {type(item).__name__} at index {idx}"
+            )
+        ref_seq = _validate_sequence(item[0], f"reference at pair {idx}")
+        qry_seq = _validate_sequence(item[1], f"query at pair {idx}")
         if len(ref_seq) != seq_len or len(qry_seq) != seq_len:
             raise ValueError(
                 f"Batch CUDA alignment requires equal sequence length across batch: "
@@ -262,6 +294,10 @@ def cuda_align_sequences_timed(
     """
     if not isinstance(pairs, list):
         raise TypeError(f"pairs must be a list, got {type(pairs).__name__}")
+    if not isinstance(threads_per_block, int) or isinstance(threads_per_block, bool):
+        raise TypeError(f"threads_per_block must be an integer, got {type(threads_per_block).__name__}")
+    if threads_per_block <= 0:
+        raise ValueError(f"threads_per_block must be positive, got {threads_per_block}")
 
     if not CUDA_AVAILABLE or cuda is None:
         raise CUDANotAvailableError(
@@ -315,39 +351,45 @@ def cuda_align_sequences_timed(
 
     # 2. Host-to-Device Memory Transfer
     t_h2d_start = time.perf_counter()
-    d_refs = cuda.to_device(refs_flat)
-    d_qrys = cuda.to_device(qrys_flat)
-    d_matches = cuda.device_array(n_pairs, dtype=np.int32)
-    d_mismatches = cuda.device_array(n_pairs, dtype=np.int32)
-    d_mismatch_flags = cuda.device_array((n_pairs, seq_len), dtype=np.uint8)
-    cuda.synchronize()
-    t_h2d = time.perf_counter() - t_h2d_start
+    d_refs = None
+    d_qrys = None
+    d_matches = None
+    d_mismatches = None
+    d_mismatch_flags = None
+    try:
+        d_refs = cuda.to_device(refs_flat)
+        d_qrys = cuda.to_device(qrys_flat)
+        d_matches = cuda.device_array(n_pairs, dtype=np.int32)
+        d_mismatches = cuda.device_array(n_pairs, dtype=np.int32)
+        d_mismatch_flags = cuda.device_array((n_pairs, seq_len), dtype=np.uint8)
+        cuda.synchronize()
+        t_h2d = time.perf_counter() - t_h2d_start
 
-    # 3. Kernel Execution
-    t_kernel_start = time.perf_counter()
-    blocks_per_grid = math.ceil(n_pairs / threads_per_block)
-    dna_align_kernel[blocks_per_grid, threads_per_block](
-        d_refs,
-        d_qrys,
-        seq_len,
-        n_pairs,
-        d_matches,
-        d_mismatches,
-        d_mismatch_flags,
-    )
-    cuda.synchronize()
-    t_kernel = time.perf_counter() - t_kernel_start
+        # 3. Kernel Execution
+        t_kernel_start = time.perf_counter()
+        blocks_per_grid = math.ceil(n_pairs / threads_per_block)
+        dna_align_kernel[blocks_per_grid, threads_per_block](
+            d_refs,
+            d_qrys,
+            seq_len,
+            n_pairs,
+            d_matches,
+            d_mismatches,
+            d_mismatch_flags,
+        )
+        cuda.synchronize()
+        t_kernel = time.perf_counter() - t_kernel_start
 
-    # 4. Device-to-Host Memory Transfer
-    t_d2h_start = time.perf_counter()
-    h_matches = d_matches.copy_to_host()
-    h_mismatches = d_mismatches.copy_to_host()
-    h_mismatch_flags = d_mismatch_flags.copy_to_host()
-    cuda.synchronize()
-    t_d2h = time.perf_counter() - t_d2h_start
-
-    # Explicitly release GPU device arrays
-    del d_refs, d_qrys, d_matches, d_mismatches, d_mismatch_flags
+        # 4. Device-to-Host Memory Transfer
+        t_d2h_start = time.perf_counter()
+        h_matches = d_matches.copy_to_host()
+        h_mismatches = d_mismatches.copy_to_host()
+        h_mismatch_flags = d_mismatch_flags.copy_to_host()
+        cuda.synchronize()
+        t_d2h = time.perf_counter() - t_d2h_start
+    finally:
+        # Explicitly release GPU device arrays in all cases
+        del d_refs, d_qrys, d_matches, d_mismatches, d_mismatch_flags
 
     # 5. Result Reconstruction
     t_recon_start = time.perf_counter()
@@ -356,7 +398,12 @@ def cuda_align_sequences_timed(
         m = int(h_matches[i])
         mm = int(h_mismatches[i])
         score = float(m / seq_len) if seq_len > 0 else 0.0
-        mismatch_indices = np.flatnonzero(h_mismatch_flags[i]).tolist()
+        if mm == 0:
+            mismatch_indices: list[int] = []
+        elif mm == seq_len:
+            mismatch_indices = list(range(seq_len))
+        else:
+            mismatch_indices = np.flatnonzero(h_mismatch_flags[i]).tolist()
 
         results.append(
             AlignmentResult(
@@ -434,6 +481,7 @@ def cuda_align_chunks(
     target: str,
     *,
     skip_unequal: bool = False,
+    threads_per_block: int = 128,
 ) -> list[AlignmentResult]:
     """Align genomic chunks against a target sequence on the GPU.
 
@@ -447,11 +495,23 @@ def cuda_align_chunks(
         Target DNA sequence to align against.
     skip_unequal : bool, default=False
         If True, skips chunks whose length does not match ``len(target)``.
+    threads_per_block : int, default=128
+        CUDA block dimension (threads per block).
 
     Returns
     -------
     list[AlignmentResult]
         Alignment result for each chunk.
+
+    Raises
+    ------
+    CUDANotAvailableError
+        If CUDA execution is not available in the environment.
+    TypeError
+        If input types are invalid.
+    ValueError
+        If inputs contain invalid characters or length mismatches when
+        ``skip_unequal=False``.
     """
     if not isinstance(chunks, list):
         raise TypeError(f"chunks must be a list, got {type(chunks).__name__}")
@@ -465,8 +525,129 @@ def cuda_align_chunks(
     for chunk in chunks:
         if not isinstance(chunk, str):
             raise TypeError(f"Each chunk must be a string, got {type(chunk).__name__}")
-        if skip_unequal and len(chunk) != target_len:
-            continue
+        if len(chunk) != target_len:
+            if skip_unequal:
+                continue
+            raise ValueError(
+                f"Sequences must have equal length: "
+                f"reference has {len(chunk)}, query has {target_len}."
+            )
         valid_pairs.append((chunk, target_norm))
 
-    return cuda_align_sequences(valid_pairs)
+    return cuda_align_sequences(valid_pairs, threads_per_block=threads_per_block)
+
+
+def cuda_align_chunks_timed(
+    chunks: list[str],
+    target: str,
+    *,
+    skip_unequal: bool = False,
+    threads_per_block: int = 128,
+) -> tuple[list[AlignmentResult], CUDATimingBreakdown]:
+    """Align genomic chunks against a target sequence on the GPU with timing breakdown.
+
+    Parameters
+    ----------
+    chunks : list[str]
+        List of DNA sequence chunks.
+    target : str
+        Target DNA sequence to align against.
+    skip_unequal : bool, default=False
+        If True, skips chunks whose length does not match ``len(target)``.
+    threads_per_block : int, default=128
+        CUDA block dimension (threads per block).
+
+    Returns
+    -------
+    tuple[list[AlignmentResult], CUDATimingBreakdown]
+        Tuple of (results list, timing breakdown in seconds).
+
+    Raises
+    ------
+    CUDANotAvailableError
+        If CUDA execution is not available in the environment.
+    TypeError
+        If input types are invalid.
+    ValueError
+        If inputs contain invalid characters or length mismatches when
+        ``skip_unequal=False``.
+    """
+    if not isinstance(chunks, list):
+        raise TypeError(f"chunks must be a list, got {type(chunks).__name__}")
+    if not isinstance(target, str):
+        raise TypeError(f"target must be a string, got {type(target).__name__}")
+
+    target_norm = _validate_sequence(target, "target")
+    target_len = len(target_norm)
+
+    valid_pairs: list[tuple[str, str]] = []
+    for chunk in chunks:
+        if not isinstance(chunk, str):
+            raise TypeError(f"Each chunk must be a string, got {type(chunk).__name__}")
+        if len(chunk) != target_len:
+            if skip_unequal:
+                continue
+            raise ValueError(
+                f"Sequences must have equal length: "
+                f"reference has {len(chunk)}, query has {target_len}."
+            )
+        valid_pairs.append((chunk, target_norm))
+
+    return cuda_align_sequences_timed(valid_pairs, threads_per_block=threads_per_block)
+
+
+def cuda_align_chunk_pairs(
+    reference_chunks: list[str],
+    query_chunks: list[str],
+    *,
+    threads_per_block: int = 128,
+) -> list[AlignmentResult]:
+    """Align corresponding pairs of chunks from two chunk lists on the GPU.
+
+    Parameters
+    ----------
+    reference_chunks : list[str]
+        Reference sequence chunks.
+    query_chunks : list[str]
+        Query sequence chunks to compare against reference chunks.
+    threads_per_block : int, default=128
+        CUDA block dimension.
+
+    Returns
+    -------
+    list[AlignmentResult]
+        One result per chunk pair, in order.
+
+    Raises
+    ------
+    CUDANotAvailableError
+        If CUDA is unavailable.
+    TypeError
+        If either argument is not a list.
+    ValueError
+        If the two lists have different lengths.
+    """
+    if not isinstance(reference_chunks, list):
+        raise TypeError(
+            f"reference_chunks must be a list, got {type(reference_chunks).__name__}"
+        )
+    if not isinstance(query_chunks, list):
+        raise TypeError(
+            f"query_chunks must be a list, got {type(query_chunks).__name__}"
+        )
+    if len(reference_chunks) != len(query_chunks):
+        raise ValueError(
+            f"Chunk lists must have equal length: "
+            f"reference has {len(reference_chunks)}, query has {len(query_chunks)}."
+        )
+
+    for i, ref in enumerate(reference_chunks):
+        if not isinstance(ref, str):
+            raise TypeError(f"Each chunk in reference_chunks must be a string, got {type(ref).__name__} at index {i}")
+    for i, qry in enumerate(query_chunks):
+        if not isinstance(qry, str):
+            raise TypeError(f"Each chunk in query_chunks must be a string, got {type(qry).__name__} at index {i}")
+
+    pairs = list(zip(reference_chunks, query_chunks))
+    return cuda_align_sequences(pairs, threads_per_block=threads_per_block)
+
