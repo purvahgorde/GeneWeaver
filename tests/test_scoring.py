@@ -1,7 +1,14 @@
+
 """Tests for DNA scoring utilities."""
+
 import pytest
 
-from src.scoring.dna_scoring import score_bases, score_sequences
+from src.scoring.dna_scoring import (
+    score_bases,
+    score_sequences,
+    validate_dna,
+)
+
 
 class TestDnaScoring:
     """Tests for DNA base scoring."""
@@ -20,9 +27,11 @@ class TestDnaScoring:
         assert score_bases("G", "T") == -1
 
     def test_lowercase_bases(self):
-        """Lowercase bases currently behave as distinct values."""
+        """Lowercase and uppercase bases are treated equally."""
         assert score_bases("a", "a") == 1
-        assert score_bases("a", "A") == -1
+        assert score_bases("a", "A") == 1
+        assert score_bases("c", "C") == 1
+        assert score_bases("a", "T") == -1
 
     def test_matching_sequences(self):
         """Identical sequences should receive the maximum score."""
@@ -40,3 +49,38 @@ class TestDnaScoring:
         """Sequences with different lengths should raise an error."""
         with pytest.raises(ValueError, match="same length"):
             score_sequences("ATGC", "ATG")
+
+
+def test_validate_valid_dna():
+    """Accept uppercase and lowercase DNA sequences."""
+    validate_dna("ATGC")
+    validate_dna("atgc")
+
+
+def test_validate_invalid_dna():
+    """Reject characters that are not valid DNA bases."""
+    with pytest.raises(ValueError, match="only A, C, G, and T"):
+        validate_dna("ATGX")
+
+
+def test_validate_ambiguous_base():
+    """Reject N because this version accepts only A, C, G, and T."""
+    with pytest.raises(ValueError, match="only A, C, G, and T"):
+        validate_dna("ATGN")
+
+
+def test_score_bases_rejects_invalid_base():
+    """Reject an invalid base during scoring."""
+    with pytest.raises(ValueError, match="only A, C, G, and T"):
+        score_bases("X", "A")
+
+
+def test_score_sequences_rejects_invalid_dna():
+    """Reject invalid DNA during sequence scoring."""
+    with pytest.raises(ValueError, match="only A, C, G, and T"):
+        score_sequences("ATGX", "ATGC")
+
+
+def test_score_sequences_case_insensitive():
+    """Score uppercase and lowercase sequences consistently."""
+    assert score_sequences("atgc", "ATGC") == 4
