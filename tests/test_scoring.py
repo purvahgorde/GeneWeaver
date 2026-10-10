@@ -84,3 +84,37 @@ def test_score_sequences_rejects_invalid_dna():
 def test_score_sequences_case_insensitive():
     """Score uppercase and lowercase sequences consistently."""
     assert score_sequences("atgc", "ATGC") == 4
+
+
+def test_empty_sequences():
+    """Empty sequences should have a score of zero."""
+    assert score_sequences("", "") == 0
+
+
+def test_validate_empty_dna():
+    """An empty string contains no invalid DNA bases."""
+    validate_dna("")
+
+
+def test_validate_rejects_none():
+    """Reject None as a DNA sequence."""
+    with pytest.raises(ValueError, match="must be a string"):
+        validate_dna(None)
+
+
+def test_validate_rejects_number():
+    """Reject numbers as DNA sequences."""
+    with pytest.raises(ValueError, match="must be a string"):
+        validate_dna(123)
+
+
+def test_score_bases_rejects_multiple_characters():
+    """Each input to base scoring must contain exactly one base."""
+    with pytest.raises(ValueError):
+        score_bases("AT", "AT")
+
+
+def test_score_sequences_rejects_none():
+    """Reject None as a sequence input."""
+    with pytest.raises(ValueError, match="must be a string"):
+        score_sequences(None, "ATGC")
