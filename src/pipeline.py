@@ -1,5 +1,20 @@
-from src.parser.fasta_parser import parse_fasta
-from src.chunking.genome_chunker import chunk_sequence
+import sys
+from pathlib import Path
+
+# Support running directly or as a package
+_SRC_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _SRC_DIR.parent
+if str(_SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(_SRC_DIR))
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+try:
+    from src.parser.fasta_parser import parse_fasta
+    from src.chunking.genome_chunker import chunk_sequence
+except ModuleNotFoundError:
+    from parser.fasta_parser import parse_fasta
+    from chunking.genome_chunker import chunk_sequence
 
 
 def process_genome(file_path, chunk_size):

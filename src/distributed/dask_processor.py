@@ -235,11 +235,6 @@ class DaskGenomeProcessor:
 
         self._default_batch_size = default_batch_size
         self._scheduler = scheduler
-        self._cluster: Any | None = None
-        self._client: Any | None = None
-        self._owns_client: bool = False
-        self._owns_cluster: bool = False
-        self._is_closed: bool = False
 
         if client is not None:
             self._client = client
@@ -450,6 +445,16 @@ class DaskGenomeProcessor:
         if not reference_chunks:
             return []
 
+        for idx, (ref, qry) in enumerate(zip(reference_chunks, query_chunks)):
+            if not isinstance(ref, str):
+                raise TypeError(
+                    f"Each reference chunk must be a string, got {type(ref).__name__} at index {idx}"
+                )
+            if not isinstance(qry, str):
+                raise TypeError(
+                    f"Each query chunk must be a string, got {type(qry).__name__} at index {idx}"
+                )
+
         eff_batch_size = batch_size if batch_size is not None else self._default_batch_size
         if not isinstance(eff_batch_size, int) or eff_batch_size < 1:
             raise ValueError(
@@ -498,6 +503,16 @@ class DaskGenomeProcessor:
             raise TypeError(f"pairs must be a list, got {type(pairs).__name__}")
         if not pairs:
             return []
+
+        for idx, item in enumerate(pairs):
+            if not isinstance(item, (tuple, list)) or len(item) != 2:
+                raise TypeError(
+                    f"Each pair must be a 2-tuple (reference, query), got {item!r} at index {idx}"
+                )
+            if not isinstance(item[0], str) or not isinstance(item[1], str):
+                raise TypeError(
+                    f"Pair elements must be strings, got ({type(item[0]).__name__}, {type(item[1]).__name__}) at index {idx}"
+                )
 
         eff_batch_size = batch_size if batch_size is not None else self._default_batch_size
         if not isinstance(eff_batch_size, int) or eff_batch_size < 1:

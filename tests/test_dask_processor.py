@@ -221,6 +221,45 @@ class TestDaskChunkAlignmentCore:
         assert dask_align_chunks(["AT"], "AT") == [align_sequence("AT", "AT")]
         assert dask_align_chunks(["ATC"], "ATG") == [align_sequence("ATC", "ATG")]
 
+    def test_single_chunk_with_mismatches(self):
+        res = dask_align_chunks(["ACTG"], "ACGT")
+        assert len(res) == 1
+        assert res[0].matches == 2
+        assert res[0].mismatches == 2
+        assert res[0].mismatch_positions == [2, 3]
+
+    def test_empty_target_with_empty_chunk(self):
+        """Aligning an empty chunk against an empty target should succeed with zeroed result."""
+        res = dask_align_chunks([""], "")
+        assert len(res) == 1
+        assert res[0] == align_sequence("", "")
+        assert res[0].alignment_length == 0
+        assert res[0].matches == 0
+
+    def test_empty_target_with_non_empty_chunk_raises(self):
+        with pytest.raises(ValueError, match="Sequences must have equal length"):
+            dask_align_chunks(["ACGT"], "", skip_unequal=False)
+
+    def test_case_insensitivity_parity(self):
+        chunks = ["acgt", "AcGt", "aCgT"]
+        target = "ACGT"
+        cpu_res = align_chunks(chunks, target)
+        dask_res = dask_align_chunks(chunks, target)
+        assert dask_res == cpu_res
+        assert all(r.score == 1.0 for r in dask_res)
+
+    def test_large_chunk_count_ordering(self):
+        """Verify strict ordering is maintained across 50 chunks with diverse mismatches."""
+        chunks = [
+            f"{'A' * i}{'C' * (10 - i)}"
+            for i in range(11)
+        ] * 5  # 55 chunks
+        target = "AAAAAAAAAA"
+        cpu_res = align_chunks(chunks, target)
+        dask_res = dask_align_chunks(chunks, target, batch_size=7)
+        assert len(dask_res) == len(chunks)
+        assert dask_res == cpu_res
+
 
 # =============================================================================
 # 4. Chunk Pairs and Sequence Batches Tests
@@ -235,6 +274,13 @@ class TestDaskChunkPairsAndSequences:
         dask_res = dask_align_chunk_pairs(ref_chunks, qry_chunks)
         assert dask_res == cpu_res
 
+    def test_align_chunk_pairs_ordering(self):
+        ref_chunks = ["AAAA", "CCCC", "GGGG", "TTTT"]
+        qry_chunks = ["AAAT", "CCCA", "GGGT", "TTTC"]
+        cpu_res = align_chunk_pairs(ref_chunks, qry_chunks)
+        dask_res = dask_align_chunk_pairs(ref_chunks, qry_chunks, batch_size=2)
+        assert dask_res == cpu_res
+
     def test_align_chunk_pairs_mismatched_lengths_raises(self):
         with pytest.raises(ValueError, match="Chunk lists must have equal length"):
             dask_align_chunk_pairs(["ACGT"], ["ACGT", "ACGT"])
@@ -242,21 +288,82 @@ class TestDaskChunkPairsAndSequences:
     def test_align_chunk_pairs_empty_lists(self):
         assert dask_align_chunk_pairs([], []) == []
 
+    def test_align_chunk_pairs_single_pair(self):
+        ref = ["ACGT"]
+        qry = ["ACTT"]
+        assert dask_align_chunk_pairs(ref, qry) == align_chunk_pairs(ref, qry)
+
+    def test_align_chunk_pairs_element_type_error(self):
+        with pytest.raises(TypeError, match="Each reference chunk must be a string"):
+            dask_align_chunk_pairs([123], ["ACGT"])  # type: ignore
+        with pytest.raises(TypeError, match="Each query chunk must be a string"):
+            dask_align_chunk_pairs(["ACGT"], [456])  # type: ignore
+
     def test_align_sequences_parity_with_cpu(self):
         pairs = [("ACGT", "ACGT"), ("ACGT", "AGGT"), ("TTTT", "CCCC")]
         cpu_res = align_sequences(pairs)
         dask_res = dask_align_sequences(pairs)
         assert dask_res == cpu_res
 
+    def test_align_sequences_different_batch_sizes(self):
+        pairs = [("ACGT", "ACGT"), ("ACGT", "AGGT"), ("TTTT", "CCCC")] * 4
+        cpu_res = align_sequences(pairs)
+        for b_size in [1, 2, 5, 20]:
+            dask_res = dask_align_sequences(pairs, batch_size=b_size)
+            assert dask_res == cpu_res
+
     def test_align_sequences_empty(self):
         assert dask_align_sequences([]) == []
 
+    def test_align_sequences_type_errors(self):
+        with pytest.raises(TypeError, match="pairs must be a list"):
+            dask_align_sequences("not_a_list")  # type: ignore
+        with pytest.raises(TypeError, match="Each pair must be a 2-tuple"):
+            dask_align_sequences(["not_a_tuple"])  # type: ignore
+        with pytest.raises(TypeError, match="Pair elements must be strings"):
+            dask_align_sequences([(123, "ACGT")])  # type: ignore
+
 
 # =============================================================================
-# 5. Failure Handling and Error Visibility Tests
+# 5. Local Schedulers and Execution Configuration Tests
+# =============================================================================
+class TestDaskSchedulerConfigurations:
+    """Tests Dask execution using different scheduler configurations."""
+
+    def test_align_chunks_threads_scheduler(self):
+        chunks = ["ACGT", "AGGT", "TGCA"]
+        target = "ACGT"
+        res = dask_align_chunks(chunks, target, scheduler="threads")
+        assert res == align_chunks(chunks, target)
+
+    def test_align_chunks_sync_scheduler(self):
+        chunks = ["ACGT", "AGGT", "TGCA"]
+        target = "ACGT"
+        res = dask_align_chunks(chunks, target, scheduler="sync")
+        assert res == align_chunks(chunks, target)
+
+    def test_align_chunks_single_threaded_scheduler(self):
+        chunks = ["ACGT", "AGGT", "TGCA"]
+        target = "ACGT"
+        res = dask_align_chunks(chunks, target, scheduler="single-threaded")
+        assert res == align_chunks(chunks, target)
+
+    def test_processor_with_custom_workers_and_threads(self):
+        with DaskGenomeProcessor(
+            n_workers=2, threads_per_worker=1, processes=False
+        ) as proc:
+            assert proc.client is not None
+            chunks = ["ACGT", "AGGT", "TGCA"]
+            target = "ACGT"
+            res = proc.align_chunks(chunks, target)
+            assert res == align_chunks(chunks, target)
+
+
+# =============================================================================
+# 6. Failure Handling and Error Visibility Tests
 # =============================================================================
 class TestDaskFailureHandling:
-    """Tests failure propagation, invalid input rejection, and type safety."""
+    """Tests failure propagation, invalid input rejection, and task crash safety."""
 
     def test_invalid_chunk_type_raises_type_error(self):
         with pytest.raises(TypeError, match="chunks must be a list"):
@@ -284,8 +391,8 @@ class TestDaskFailureHandling:
         with pytest.raises(ValueError, match="batch_size must be a positive integer"):
             dask_align_chunks(["ACGT"], "ACGT", batch_size=-5)
 
-    def test_task_raises_arbitrary_exception_handled_clearly(self, monkeypatch):
-        """Simulate unexpected task failure and ensure error is propagated clearly."""
+    def test_task_raises_arbitrary_exception_single_chunk(self, monkeypatch):
+        """Simulate unexpected task failure in single task mode."""
         import src.distributed.dask_processor as dp
 
         def broken_task(*args, **kwargs):
@@ -293,11 +400,37 @@ class TestDaskFailureHandling:
 
         monkeypatch.setattr(dp, "_align_single_chunk_task", broken_task)
         with pytest.raises(RuntimeError, match="Simulated worker compute crash"):
-            dask_align_chunks(["ACGT"], "ACGT")
+            dask_align_chunks(["ACGT"], "ACGT", batch_size=1)
+
+    def test_task_raises_arbitrary_exception_batched(self, monkeypatch):
+        """Simulate unexpected task failure in batched task mode."""
+        import src.distributed.dask_processor as dp
+
+        def broken_batch_task(*args, **kwargs):
+            raise RuntimeError("Simulated worker batch compute crash")
+
+        monkeypatch.setattr(dp, "_align_chunk_batch_task", broken_batch_task)
+        with pytest.raises(RuntimeError, match="Simulated worker batch compute crash"):
+            dask_align_chunks(["ACGT", "AGGT"], "ACGT", batch_size=2)
+
+    def test_task_failure_does_not_silently_produce_incomplete_results(self, monkeypatch):
+        """Ensure failure in partial tasks stops execution and does NOT return partial results."""
+        import src.distributed.dask_processor as dp
+
+        original_task = dp._align_single_chunk_task
+
+        def flaky_task(chunk_id, chunk, target):
+            if chunk_id == 1:
+                raise RuntimeError("Worker fail on chunk 1")
+            return original_task(chunk_id, chunk, target)
+
+        monkeypatch.setattr(dp, "_align_single_chunk_task", flaky_task)
+        with pytest.raises(RuntimeError, match="Worker fail on chunk 1"):
+            dask_align_chunks(["ACGT", "AGGT", "CGTA"], "ACGT", batch_size=1)
 
 
 # =============================================================================
-# 6. End-to-End Pipeline Integration Tests
+# 7. End-to-End Pipeline Integration Tests
 # =============================================================================
 class TestDaskEndToEndPipelineIntegration:
     """Tests the full pipeline path: FASTA -> Parser -> Chunker -> Dask Tasks -> Results."""
@@ -317,6 +450,21 @@ class TestDaskEndToEndPipelineIntegration:
         assert len(dask_results) == 8
         assert dask_results == cpu_results
 
+    def test_e2e_pipeline_with_custom_processor(self):
+        """Verify passing an explicit DaskGenomeProcessor instance works seamlessly."""
+        target = "ATGCGTACGT"
+        chunk_size = 10
+
+        with DaskGenomeProcessor(processes=False) as custom_proc:
+            results = process_fasta_dask(
+                MOCK_GENOME_PATH,
+                target,
+                chunk_size,
+                skip_unequal=True,
+                processor=custom_proc,
+            )
+            assert len(results) == 8
+
     def test_e2e_pipeline_timed(self):
         target = "ATGCGTACGT"
         chunk_size = 10
@@ -335,6 +483,21 @@ class TestDaskEndToEndPipelineIntegration:
         assert timing.chunk_time >= 0.0
         assert timing.dask_align_time >= 0.0
         assert timing.total_pipeline_time >= 0.0
+
+    def test_e2e_pipeline_timed_with_custom_processor(self):
+        target = "ATGCGTACGT"
+        chunk_size = 10
+
+        with DaskGenomeProcessor(processes=False) as custom_proc:
+            results, timing = process_fasta_dask_timed(
+                MOCK_GENOME_PATH,
+                target,
+                chunk_size,
+                skip_unequal=True,
+                processor=custom_proc,
+            )
+            assert len(results) == 8
+            assert timing.num_aligned == 8
 
     def test_e2e_missing_fasta_raises_file_not_found(self):
         with pytest.raises(FileNotFoundError):
@@ -374,3 +537,4 @@ class TestDaskEndToEndPipelineIntegration:
             assert len(res.mismatch_positions) == res.mismatches
             assert 0.0 <= res.score <= 1.0
             assert res.score == pytest.approx(res.matches / res.alignment_length)
+

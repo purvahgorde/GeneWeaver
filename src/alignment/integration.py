@@ -36,31 +36,6 @@ from alignment.dispatcher import align_chunks_dispatch, normalize_backend
 
 @dataclass(frozen=True)
 class PipelineTimingBreakdown:
-    """Detailed timing breakdown for end-to-end alignment pipeline.
-
-    All times are reported in seconds.
-
-    Attributes
-    ----------
-    parse_time : float
-        Time spent parsing the FASTA file.
-    chunk_time : float
-        Time spent chunking sequences into windows.
-    alignment_time : float
-        Total time spent in alignment engine.
-    total_pipeline_time : float
-        Total wall-clock time from start to completion.
-    num_sequences : int
-        Number of sequences parsed from FASTA.
-    num_chunks : int
-        Total chunks produced by chunker.
-    num_aligned : int
-        Number of chunks aligned against target.
-    backend : str
-        Backend used ('cpu' or 'cuda').
-    cuda_timing : CUDATimingBreakdown | None
-        Granular CUDA transfer and kernel timing breakdown (if backend='cuda').
-    """
 
     parse_time: float
     chunk_time: float
@@ -82,45 +57,7 @@ def run_pipeline(
     skip_unequal: bool = True,
     threads_per_block: int = 128,
 ) -> list[AlignmentResult]:
-    """Execute the end-to-end DNA alignment pipeline with CPU or CUDA acceleration.
-
-    Parses a FASTA file using Member 2's parser, partitions all sequences into
-    windows of size `chunk_size` using Member 2's genome chunker, and aligns
-    each resulting chunk against `target` using the specified backend (CPU or CUDA).
-
-    Parameters
-    ----------
-    fasta_path : str | Path
-        Path to the input FASTA file.
-    target : str
-        Target DNA sequence to align each genomic chunk against (e.g. guide RNA).
-    chunk_size : int
-        Window size in bases for genome chunking.
-    backend : str, default="cpu"
-        Alignment engine to use ('cpu' or 'cuda'/'gpu').
-    skip_unequal : bool, default=True
-        If True, residual tail chunks whose length differs from len(target)
-        are skipped. If False, any length mismatch raises a ValueError.
-    threads_per_block : int, default=128
-        CUDA block dimension (ignored for CPU backend).
-
-    Returns
-    -------
-    list[AlignmentResult]
-        Alignment results for each chunk, preserving chunk order.
-
-    Raises
-    ------
-    FileNotFoundError
-        If fasta_path does not exist.
-    CUDANotAvailableError
-        If backend='cuda' and CUDA execution is unavailable.
-    ValueError
-        If backend is unsupported, chunk_size <= 0, target has invalid bases,
-        or chunk length mismatches target when skip_unequal=False.
-    TypeError
-        If input types are invalid.
-    """
+    
     if not isinstance(chunk_size, int) or isinstance(chunk_size, bool):
         raise TypeError(f"chunk_size must be an int, got {type(chunk_size).__name__}")
     if chunk_size <= 0:
@@ -152,40 +89,7 @@ def run_pipeline_timed(
     skip_unequal: bool = True,
     threads_per_block: int = 128,
 ) -> tuple[list[AlignmentResult], PipelineTimingBreakdown]:
-    """Execute the end-to-end DNA alignment pipeline and return granular timings.
-
-    Parameters
-    ----------
-    fasta_path : str | Path
-        Path to the input FASTA file.
-    target : str
-        Target DNA sequence to align each genomic chunk against.
-    chunk_size : int
-        Window size in bases for genome chunking.
-    backend : str, default="cpu"
-        Alignment engine to use ('cpu' or 'cuda').
-    skip_unequal : bool, default=True
-        Whether to skip unequal length chunks.
-    threads_per_block : int, default=128
-        CUDA block dimension (threads per block).
-
-    Returns
-    -------
-    tuple[list[AlignmentResult], PipelineTimingBreakdown]
-        Tuple containing alignment results and component timing breakdown.
-
-    Raises
-    ------
-    FileNotFoundError
-        If fasta_path does not exist.
-    CUDANotAvailableError
-        If backend='cuda' and CUDA execution is unavailable.
-    ValueError
-        If backend is unsupported, chunk_size <= 0, target has invalid bases,
-        or chunk length mismatches target when skip_unequal=False.
-    TypeError
-        If input types are invalid.
-    """
+    
     if not isinstance(chunk_size, int) or isinstance(chunk_size, bool):
         raise TypeError(f"chunk_size must be an int, got {type(chunk_size).__name__}")
     if chunk_size <= 0:
