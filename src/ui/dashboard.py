@@ -1,4 +1,4 @@
-﻿
+
 from pathlib import Path
 
 from rich.text import Text
@@ -56,32 +56,52 @@ class GeneWeaverApp(App):
             f"Chunks: {len(chunks)}"
         )
 
+
     def format_dna_alignment(self, chunks, target: str) -> Text:
-        """Color DNA bases green for matches and red for mismatches."""
+        """Display aligned DNA bases and highlight mismatches."""
         output = Text()
 
-        output.append(f"Target: {target}\n", style="bold cyan")
-        output.append(
-            "Green = match | Red = mismatch\n\n",
-            style="dim",
-        )
+        output.append("TARGET  ", style="bold cyan")
+        output.append(target + "\n\n", style="bold cyan")
+        output.append("Legend: ", style="bold")
+        output.append("Match ", style="green")
+        output.append("Mismatch\n\n", style="red")
 
         if not chunks:
             output.append("No chunks available for comparison.")
             return output
 
         for index, chunk in enumerate(chunks, start=1):
-            output.append(f"Chunk {index}: ", style="bold")
+            output.append(f"Chunk {index:<3} ", style="bold")
+            mismatch_positions = []
 
-            for base, target_base in zip(chunk, target):
+            for position, (base, target_base) in enumerate(
+                zip(chunk, target), start=1
+            ):
                 if base == target_base:
                     output.append(base, style="green")
                 else:
                     output.append(base, style="red")
+                    mismatch_positions.append(position)
+
+            output.append("\n")
+            output.append("         ")
+
+            if mismatch_positions:
+                positions_text = ", ".join(
+                    str(position) for position in mismatch_positions
+                )
+                output.append(
+                    f"Mismatch positions: {positions_text}\n",
+                    style="red",
+                )
+            else:
+                output.append("Perfect match\n", style="green")
 
             output.append("\n")
 
         return output
+
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         """Run alignment and update the dashboard."""
