@@ -35,6 +35,7 @@ from alignment.cuda_alignment import (
     cuda_align_sequences,
     cuda_align_sequences_timed,
     cuda_align_chunks,
+    cuda_align_chunks_shared,
     cuda_align_chunks_timed,
     cuda_align_chunk_pairs,
     is_cuda_available,
@@ -42,7 +43,9 @@ from alignment.cuda_alignment import (
     CUDANotAvailableError,
     CUDATimingBreakdown,
     _prepare_host_buffers,
+    _prepare_host_buffers_target,
     _encode_sequence_ascii,
+    MAX_SHARED_TARGET_LEN,
 )
 
 # Pytest skip marker when CUDA hardware / Numba CUDA is unavailable
@@ -107,6 +110,45 @@ class TestCUDAHostPreparation:
         assert n_pairs == 1
         assert len(refs_flat) == 0
         assert len(qrys_flat) == 0
+
+    def test_prepare_host_buffers_target_valid(self):
+        chunks = ["ACGT", "TCGT", "GGCC"]
+        target = "ACGT"
+        refs_flat, target_flat, seq_len, n_pairs = _prepare_host_buffers_target(chunks, target)
+        assert seq_len == 4
+        assert n_pairs == 3
+        assert len(refs_flat) == 12
+        assert len(target_flat) == 4
+        assert list(target_flat) == [65, 67, 71, 84]
+
+    def test_prepare_host_buffers_target_empty(self):
+        refs_flat, target_flat, seq_len, n_pairs = _prepare_host_buffers_target([], "ACGT")
+        assert len(refs_flat) == 0
+        assert len(target_flat) == 4
+        assert seq_len == 4
+        assert n_pairs == 0
+
+    def test_prepare_host_buffers_target_length_mismatch(self):
+        with pytest.raises(ValueError, match="Sequences must have equal length"):
+            _prepare_host_buffers_target(["ACGT", "ACG"], "ACGT")
+
+    def test_prepare_host_buffers_target_invalid_chars(self):
+        with pytest.raises(ValueError, match="invalid characters"):
+            _prepare_host_buffers_target(["ACGTN"], "ACGT")
+
+        with pytest.raises(ValueError, match="invalid characters"):
+            _prepare_host_buffers_target(["ACGT"], "ACGTN")
+
+    def test_prepare_host_buffers_target_type_errors(self):
+        with pytest.raises(TypeError, match="chunks must be a list or tuple"):
+            _prepare_host_buffers_target("not a list", "ACGT")  # type: ignore
+
+        with pytest.raises(TypeError, match="target must be a string"):
+            _prepare_host_buffers_target(["ACGT"], 123)  # type: ignore
+
+        with pytest.raises(TypeError, match="Each chunk must be a string"):
+            _prepare_host_buffers_target([123], "ACGT")  # type: ignore
+
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -198,6 +240,25 @@ class TestCUDAAvailabilityAndFallback:
 
         with pytest.raises(ValueError, match="Sequences must have equal length"):
             cuda_align_chunks(["ACGT", "ACG"], "ACGT", skip_unequal=False)
+
+    def test_shared_memory_parameter_validation(self):
+        """use_shared_memory flag must be a boolean."""
+        with pytest.raises(TypeError, match="use_shared_memory must be a bool"):
+            cuda_align_chunks(["ACGT"], "ACGT", use_shared_memory="true")  # type: ignore
+
+        with pytest.raises(TypeError, match="use_shared_memory must be a bool"):
+            cuda_align_chunks_timed(["ACGT"], "ACGT", use_shared_memory=1)  # type: ignore
+
+    def test_cuda_align_chunks_shared_raises_when_no_cuda(self):
+        """cuda_align_chunks_shared raises CUDANotAvailableError cleanly when CUDA is unavailable."""
+        if not is_cuda_available():
+            with pytest.raises(CUDANotAvailableError):
+                cuda_align_chunks_shared(["ACGT"], "ACGT")
+
+    def test_max_shared_target_len_constant(self):
+        """Verify MAX_SHARED_TARGET_LEN is defined and positive."""
+        assert isinstance(MAX_SHARED_TARGET_LEN, int)
+        assert MAX_SHARED_TARGET_LEN == 1024
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -352,3 +413,36 @@ class TestCUDAAlignmentParityWithCPU:
             assert len(res.mismatch_positions) == res.mismatches
             assert 0.0 <= res.score <= 1.0
             assert res.score == pytest.approx(res.matches / res.alignment_length)
+
+    def test_cuda_align_chunks_shared_parity(self):
+        """Shared memory chunk alignment must match CPU and baseline CUDA results exactly."""
+        target = "ACGTACGTAC"
+        chunks = [
+            "ACGTACGTAC",  # exact match
+            "ACGTTCGTAC",  # 1 mismatch
+            "TTTTTTTTTT",  # 10 mismatches
+            "ACGTACGTAT",  # 1 mismatch
+        ]
+        cpu_res = align_chunks(chunks, target)
+        cuda_baseline = cuda_align_chunks(chunks, target, use_shared_memory=False)
+        cuda_shared = cuda_align_chunks(chunks, target, use_shared_memory=True)
+        cuda_shared_helper = cuda_align_chunks_shared(chunks, target)
+
+        assert cuda_baseline == cpu_res
+        assert cuda_shared == cpu_res
+        assert cuda_shared_helper == cpu_res
+
+    def test_cuda_align_chunks_shared_timed(self):
+        """Shared memory chunk alignment timed execution must return valid timing breakdown."""
+        target = "ACGTACGTAC"
+        chunks = ["ACGTACGTAC", "ACGTTCGTAC"]
+        cpu_res = align_chunks(chunks, target)
+        gpu_res, timing = cuda_align_chunks_timed(chunks, target, use_shared_memory=True)
+
+        assert gpu_res == cpu_res
+        assert isinstance(timing, CUDATimingBreakdown)
+        assert timing.total_wall_time >= 0.0
+        assert timing.kernel_execution_time >= 0.0
+        assert timing.h2d_transfer_time >= 0.0
+        assert timing.d2h_transfer_time >= 0.0
+

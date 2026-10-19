@@ -150,6 +150,7 @@ def align_chunks_dispatch(
     backend: str = "cpu",
     skip_unequal: bool = False,
     threads_per_block: int = 128,
+    use_shared_memory: bool = False,
 ) -> list[AlignmentResult]:
     """Align genomic chunks against a target sequence using the selected backend.
 
@@ -166,6 +167,9 @@ def align_chunks_dispatch(
         If False, length mismatch raises a ValueError.
     threads_per_block : int, default=128
         CUDA block dimension (ignored for CPU backend).
+    use_shared_memory : bool, default=False
+        If True, utilizes Numba CUDA shared-memory optimization (`dna_align_shared_kernel`)
+        when backend='cuda'.
 
     Returns
     -------
@@ -189,6 +193,7 @@ def align_chunks_dispatch(
             target,
             skip_unequal=skip_unequal,
             threads_per_block=threads_per_block,
+            use_shared_memory=use_shared_memory,
         )
     return align_chunks(chunks, target, skip_unequal=skip_unequal)
 

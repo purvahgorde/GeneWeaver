@@ -359,31 +359,113 @@ Worker tasks support dispatching alignment computations dynamically:
 
 ---
 
-## 17. Week 3 Sprint Checklist
+# Day 6 -- Reliability, Error Handling, and Resource Management
 
-- [x] Implement Dask distributed alignment architecture (`src/distributed/dask_processor.py`).
-- [x] Guarantee 100% deterministic result equivalence and ordering parity against CPU reference baseline.
-- [x] Support both Dask LocalCluster and in-process local thread scheduler (`scheduler='threads'`).
-- [x] Analyze measured performance, identify bottlenecks, and eliminate redundant task/serialization overhead.
-- [x] Compare sequential CPU baseline with Dask local and distributed schedulers with real timings.
-- [x] Validate task batching and granularity impact empirically across multiple sizes.
-- [x] Implement dynamic workload auto-tuning for task batch size based on available worker count (`calculate_optimal_batch_size`).
-- [x] Implement hybrid worker backend selection (`worker_backend="cpu" | "cuda" | "auto"`) with graceful CPU fallback.
-- [x] Maintain zero breaking changes to Week 1 & Week 2 modules and public contracts.
-- [x] All 219 tests passing or truthfully skipped (197 passed, 22 skipped, 0 failed).
+## 17. Robust Error Handling & Exception Propagation
 
-**Week 3 Status**: **COMPLETE & FULLY VALIDATED**
+1. **Closed-State Guard**:
+   - `DaskGenomeProcessor` explicitly tracks `_is_closed`.
+   - Any invocation of `align_chunks()`, `align_chunk_pairs()`, `align_sequences()`, or `_execute_tasks()` after `close()` immediately raises `RuntimeError("Cannot perform operations on a closed DaskGenomeProcessor.")`, preventing silent fallback or execution on destroyed resources.
+2. **Incomplete-Result Detection**:
+   - In distributed environments, worker drops or partial task completions must never be presented as success.
+   - `DaskGenomeProcessor` verifies that the collected result count strictly matches the expected count (`len(valid_items)` or `len(chunks)`).
+   - If any worker task drops results or fails silently, `DaskTaskError` is raised immediately with detailed diagnostic counts:
+     `DaskTaskError: Incomplete Dask task execution: expected N results, but received M.`
+3. **Task Failure Wrapping**:
+   - Standard user input errors (`ValueError`, `TypeError`, `FileNotFoundError`) are preserved and propagated directly to callers for clean contract parity.
+   - Unexpected worker crashes or distributed network/scheduler failures are cleanly wrapped in `DaskTaskError` (a subclass of `RuntimeError`) with the worker's original error message preserved.
+4. **Upfront Input Validation**:
+   - `process_fasta_dask` and `process_fasta_dask_timed` validate `target` type and canonical DNA bases upfront before reading or chunking the input FASTA file, eliminating wasted file I/O and task allocation on invalid inputs.
+
+## 18. Resource Lifecycle Safety
+
+1. **Selective Resource Allocation**:
+   - When an explicit local scheduler (`scheduler="threads"`, `scheduler="sync"`, or `scheduler="single-threaded"`) is specified, the processor avoids creating an unnecessary `LocalCluster` or `Client` altogether (`owns_client=False`, `owns_cluster=False`, `client=None`).
+   - Tasks execute directly via Dask's lightweight in-process compute graph, avoiding the ~220 ms startup overhead of a distributed cluster.
+2. **Cluster and Client Ownership Isolation**:
+   - If the caller supplies a shared `distributed.Client`, `DaskGenomeProcessor` marks `owns_client=False` and will **never** close or disrupt the caller's shared client.
+   - When `DaskGenomeProcessor` auto-starts its own `LocalCluster`, both `owns_cluster=True` and `owns_client=True` are set, ensuring idempotent, clean teardown upon `close()` or context manager exit (`__exit__`).
 
 ---
 
-## 18. Transition to Week 4 Plan
+# Day 7 -- Final Validation, Full Regression, and Week 3 Sign-Off
 
-Upcoming Week 4 Objectives:
-1. **CUDA Shared Memory Optimizations (`src/alignment/cuda_alignment.py`)**:
-   - Leverage fast `cuda.shared.array` to cache sequence target/query segments on-chip.
-   - Reduce global device memory traffic and optimize thread block occupancy.
-2. **Kernel Block/Grid Auto-Tuning**:
-   - Determine optimal `threads_per_block` (e.g., 64, 128, 256) based on warp occupancy and register limits.
-3. **Score Aggregation & Interactive Terminal Dashboard**:
-   - Integrate alignment results with Member 2's aggregation and Textual UI dashboard.
+## 19. Complete Regression Suite Verification
 
+The full test suite across all modules was executed against the active virtual environment:
+
+```text
+============================= test session starts =============================
+platform win32 -- Python 3.13.15, pytest-9.1.1, pluggy-1.6.0
+rootdir: C:\Pm\GeneWeaver
+configfile: pytest.ini
+collected 237 items
+
+tests\test_cuda_alignment.py .......................ssssssssssssss       [ 15%]
+tests\test_dask_processor.py ........................................... [ 33%]
+..........................                                               [ 44%]
+tests\test_gpu_pipeline_integration.py ............ssssssssss...         [ 55%]
+src\tests\test_chunking.py .....                                         [ 57%]
+src\tests\test_cpu_alignment.py ........................................ [ 74%]
+................................                                         [ 87%]
+src\tests\test_integration.py ..........................                 [ 98%]
+src\tests\test_parser.py ...                                             [100%]
+
+====================== 213 passed, 24 skipped in 18.65s =======================
+```
+
+| Test Suite / Module | Description | Tests Collected | Passed | Skipped | Failed |
+|---|---|---|---|---|---|
+| `src/tests/test_cpu_alignment.py` | CPU reference alignment oracle unit tests | 72 | 72 | 0 | 0 |
+| `src/tests/test_parser.py` | BioPython FASTA parser contract tests | 3 | 3 | 0 | 0 |
+| `src/tests/test_chunking.py` | Genome sequence chunker contract tests | 5 | 5 | 0 | 0 |
+| `src/tests/test_integration.py` | Week 1 & Week 2 pipeline integration tests | 26 | 26 | 0 | 0 |
+| `tests/test_cuda_alignment.py` | CUDA host prep, fallback, and shared-memory tests | 37 | 23 | 14 | 0 |
+| `tests/test_gpu_pipeline_integration.py` | Dispatcher & GPU pipeline integration | 25 | 15 | 10 | 0 |
+| `tests/test_dask_processor.py` | Dask distributed engine, reliability, & E2E tests | 69 | 69 | 0 | 0 |
+| **Total Test Suite** | **Full Project Regression Suite** | **237** | **213** | **24** | **0** |
+
+- **Passed Tests**: 213 (100% of executable tests pass).
+- **Skipped Tests**: 24 (GPU kernel execution truthfully skipped due to absence of `nvvm.dll` compiler library on Windows host).
+- **Failed Tests**: **0**.
+
+## 20. End-to-End Pipeline & Parity Verification
+
+The full end-to-end pipeline:
+$$\text{FASTA input} \longrightarrow \text{BioPython parsing} \longrightarrow \text{Genome chunking} \longrightarrow \text{Dask task graph} \longrightarrow \text{Ordered results}$$
+was validated using `mock_genome.fasta` as well as dynamically generated multi-record test datasets:
+- **100% Deterministic Equivalence**: Every aligned chunk produced identical `matches`, `mismatches`, `score`, and `mismatch_positions` compared to sequential CPU reference execution.
+- **Ordering Invariant**: Results strictly match the original chunk list order regardless of worker task completion order.
+- **Boundary Handling**: Chunks at chromosome boundaries differing from target length are handled deterministically (`skip_unequal=True` omits; `skip_unequal=False` raises `ValueError`).
+- **Empty Datasets**: 0-record FASTA files and empty chunk lists return empty result containers cleanly without errors.
+
+## 21. Real Benchmark Measurements Summary
+
+Measured on Intel Core i7-11800H / Windows 11 with 5 rounds per configuration (RNG Seed: 42, Mutation Rate: 10%):
+
+| Workload Configuration | Chunk Size x Count | Total Bases | Sequential CPU Avg | Dask Local (threads) Avg | Dask Distributed Avg | Parity |
+|---|---|---|---|---|---|---|
+| **Small** | $100\text{ bp} \times 500$ | 50,000 | **15.78 ms** | 31.07 ms | 53.25 ms | Exact (100%) |
+| **Medium** | $1,000\text{ bp} \times 500$ | 500,000 | 156.36 ms | **154.22 ms** | 191.18 ms | Exact (100%) |
+| **Large** | $5,000\text{ bp} \times 200$ | 1,000,000 | 318.44 ms | **281.90 ms** | 353.56 ms | Exact (100%) |
+
+### Batch Granularity Impact (Medium Workload: 500,000 bp):
+- `batch_size = 1` (500 micro-tasks): 654.77 ms (scheduling overhead dominates).
+- `batch_size = 10` (50 tasks): 202.29 ms (+69.1% faster).
+- `batch_size = 50` (10 tasks): 163.01 ms (+75.1% faster).
+- `batch_size = 125` (4 tasks): 164.19 ms (+74.9% faster).
+- `batch_size = 250` (2 tasks): **154.77 ms** (+76.4% faster).
+
+---
+
+## 22. Week 3 Completion Sign-Off & Status
+
+- [x] Day 1: Dask Environment Setup and Distributed Alignment Engine (`src/distributed/dask_processor.py`).
+- [x] Day 2: End-to-End Pipeline Integration (`process_fasta_dask`, `process_fasta_dask_timed`).
+- [x] Day 3: Correctness Validation, Index Sorting, and Strict Ordering Parity.
+- [x] Day 4: Performance Profiling, Granularity Impact, and Bottleneck Elimination.
+- [x] Day 5: Dynamic Task Batch Auto-Tuning and Hybrid Worker Backend (`worker_backend='auto'`).
+- [x] Day 6: Error Handling, Incomplete-Result Detection, and Resource Management Lifecycle.
+- [x] Day 7: Final Regression Testing, End-to-End Pipeline Parity, and Benchmark Documentation.
+
+**Week 3 Status**: **100% COMPLETE AND VALIDATED**

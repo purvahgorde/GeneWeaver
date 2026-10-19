@@ -56,6 +56,7 @@ def run_pipeline(
     backend: str = "cpu",
     skip_unequal: bool = True,
     threads_per_block: int = 128,
+    use_shared_memory: bool = False,
 ) -> list[AlignmentResult]:
     
     if not isinstance(chunk_size, int) or isinstance(chunk_size, bool):
@@ -77,6 +78,7 @@ def run_pipeline(
         backend=norm_backend,
         skip_unequal=skip_unequal,
         threads_per_block=threads_per_block,
+        use_shared_memory=use_shared_memory,
     )
 
 
@@ -88,6 +90,7 @@ def run_pipeline_timed(
     backend: str = "cpu",
     skip_unequal: bool = True,
     threads_per_block: int = 128,
+    use_shared_memory: bool = False,
 ) -> tuple[list[AlignmentResult], PipelineTimingBreakdown]:
     
     if not isinstance(chunk_size, int) or isinstance(chunk_size, bool):
@@ -120,6 +123,7 @@ def run_pipeline_timed(
             target,
             skip_unequal=skip_unequal,
             threads_per_block=threads_per_block,
+            use_shared_memory=use_shared_memory,
         )
         t_align = cuda_timing.total_wall_time
     else:

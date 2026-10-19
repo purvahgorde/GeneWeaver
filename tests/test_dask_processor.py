@@ -699,4 +699,107 @@ class TestDaskBatchAutoTuningAndWorkerBackend:
                 proc.align_chunks(["ACGT"], "ACGT", batch_size=-1)
 
 
+# =============================================================================
+# 9. Reliability, Incomplete-Result Detection, and Resource Management Tests (Day 6)
+# =============================================================================
+class TestDaskReliabilityAndResourceManagement:
+    """Tests for Day 6 reliability, error handling, incomplete results, and resource lifecycle."""
+
+    def test_closed_processor_raises_runtime_error(self):
+        """Operations on a closed processor must raise RuntimeError instead of failing silently."""
+        proc = DaskGenomeProcessor(scheduler="threads")
+        proc.close()
+        assert proc.is_closed is True
+
+        with pytest.raises(RuntimeError, match="Cannot perform operations on a closed DaskGenomeProcessor"):
+            proc.align_chunks(["ACGT"], "ACGT")
+
+        with pytest.raises(RuntimeError, match="Cannot perform operations on a closed DaskGenomeProcessor"):
+            proc.align_chunk_pairs(["ACGT"], ["ACGT"])
+
+        with pytest.raises(RuntimeError, match="Cannot perform operations on a closed DaskGenomeProcessor"):
+            proc.align_sequences([("ACGT", "ACGT")])
+
+        with pytest.raises(RuntimeError, match="Cannot execute tasks on a closed DaskGenomeProcessor"):
+            proc._execute_tasks([])
+
+    def test_local_scheduler_avoids_unnecessary_cluster_creation(self):
+        """Using a local scheduler like 'threads' or 'sync' must NOT create a cluster or client."""
+        proc = DaskGenomeProcessor(scheduler="threads")
+        try:
+            assert proc.client is None
+            assert proc._cluster is None
+            assert proc.owns_client is False
+            assert proc.owns_cluster is False
+        finally:
+            proc.close()
+
+    def test_incomplete_results_raises_dask_task_error(self, monkeypatch):
+        """If worker tasks fail to return all expected chunk results, DaskTaskError must be raised."""
+        import src.distributed.dask_processor as dp
+
+        # Return empty list from batch task simulating worker dropping chunks
+        def drop_chunks_batch(*args, **kwargs):
+            return []
+
+        monkeypatch.setattr(dp, "_align_chunk_batch_task", drop_chunks_batch)
+        with pytest.raises(DaskTaskError, match="Incomplete Dask task execution: expected 2 results, but received 0"):
+            dask_align_chunks(["ACGT", "AGGT"], "ACGT", batch_size=2)
+
+    def test_incomplete_chunk_pairs_raises_dask_task_error(self, monkeypatch):
+        """If worker tasks drop chunk pair results, DaskTaskError must be raised."""
+        import src.distributed.dask_processor as dp
+
+        def drop_pairs_batch(*args, **kwargs):
+            return []
+
+        monkeypatch.setattr(dp, "_align_pair_batch_task", drop_pairs_batch)
+        with pytest.raises(DaskTaskError, match="Incomplete Dask task execution: expected 2 results, but received 0"):
+            dask_align_chunk_pairs(["ACGT", "GGCC"], ["ACGT", "GGAA"], batch_size=2)
+
+    def test_incomplete_sequences_raises_dask_task_error(self, monkeypatch):
+        """If worker tasks drop sequence pair results, DaskTaskError must be raised."""
+        import src.distributed.dask_processor as dp
+
+        def drop_pairs_batch(*args, **kwargs):
+            return []
+
+        monkeypatch.setattr(dp, "_align_pair_batch_task", drop_pairs_batch)
+        with pytest.raises(DaskTaskError, match="Incomplete Dask task execution: expected 2 results, but received 0"):
+            dask_align_sequences([("ACGT", "ACGT"), ("TTTT", "CCCC")], batch_size=2)
+
+    def test_process_fasta_dask_target_validation_upfront(self):
+        """process_fasta_dask must validate target sequence type and characters upfront."""
+        with pytest.raises(TypeError, match="target must be a string"):
+            process_fasta_dask(MOCK_GENOME_PATH, 12345, 10)  # type: ignore
+
+        with pytest.raises(ValueError, match="target contains invalid characters"):
+            process_fasta_dask(MOCK_GENOME_PATH, "ACGTNX", 10)
+
+    def test_process_fasta_dask_empty_fasta(self):
+        """process_fasta_dask with empty FASTA file returns empty results, matching CPU."""
+        with tempfile.NamedTemporaryFile("w", suffix=".fasta", delete=False) as tf:
+            temp_path = tf.name
+
+        try:
+            res = process_fasta_dask(temp_path, "ACGT", 4, scheduler="threads")
+            assert res == []
+
+            res_timed, timing = process_fasta_dask_timed(temp_path, "ACGT", 4, scheduler="threads")
+            assert res_timed == []
+            assert timing.num_aligned == 0
+            assert timing.num_sequences == 0
+            assert timing.num_chunks == 0
+        finally:
+            Path(temp_path).unlink(missing_ok=True)
+
+    def test_process_fasta_dask_with_scheduler_arg(self):
+        """process_fasta_dask accepts scheduler keyword argument directly."""
+        cpu_results = run_pipeline(MOCK_GENOME_PATH, "ATGCGTACGT", 10, skip_unequal=True)
+        dask_results = process_fasta_dask(
+            MOCK_GENOME_PATH, "ATGCGTACGT", 10, skip_unequal=True, scheduler="threads"
+        )
+        assert dask_results == cpu_results
+
+
 

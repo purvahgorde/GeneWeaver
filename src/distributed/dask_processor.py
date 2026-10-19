@@ -437,6 +437,11 @@ class DaskGenomeProcessor:
         return self._owns_client
 
     @property
+    def owns_cluster(self) -> bool:
+        """Return True if this processor owns and will shut down the cluster."""
+        return self._owns_cluster
+
+    @property
     def is_closed(self) -> bool:
         """Return True if the processor has been closed."""
         return self._is_closed
@@ -482,7 +487,9 @@ class DaskGenomeProcessor:
         self,
         tasks: list[Any],
     ) -> list[Any]:
-        
+        if self._is_closed:
+            raise RuntimeError("Cannot execute tasks on a closed DaskGenomeProcessor.")
+
         if not tasks:
             return []
 
@@ -491,14 +498,22 @@ class DaskGenomeProcessor:
                 # When client is active, compute tasks using client
                 futures = self._client.compute(tasks)
                 return self._client.gather(futures)
+            except (ValueError, TypeError, FileNotFoundError):
+                raise
+            except DaskTaskError:
+                raise
             except Exception as exc:
-                raise exc
+                raise DaskTaskError(f"Dask distributed task execution failed: {exc}") from exc
         else:
             sched = self._scheduler or "threads"
             try:
                 return list(dask.compute(*tasks, scheduler=sched))
+            except (ValueError, TypeError, FileNotFoundError):
+                raise
+            except DaskTaskError:
+                raise
             except Exception as exc:
-                raise exc
+                raise DaskTaskError(f"Dask task execution failed: {exc}") from exc
 
     def _resolve_batch_size(
         self,
@@ -522,6 +537,9 @@ class DaskGenomeProcessor:
         skip_unequal: bool = False,
         batch_size: int | str | None = None,
     ) -> list[AlignmentResult]:
+        if self._is_closed:
+            raise RuntimeError("Cannot perform operations on a closed DaskGenomeProcessor.")
+
         if not isinstance(chunks, list):
             raise TypeError(f"chunks must be a list, got {type(chunks).__name__}")
         if not isinstance(target, str):
@@ -610,6 +628,13 @@ class DaskGenomeProcessor:
             for batch_res in raw_results:
                 indexed_results.extend(batch_res)
 
+        expected_count = len(valid_items) if valid_items is not None else len(chunks)
+        if len(indexed_results) != expected_count:
+            raise DaskTaskError(
+                f"Incomplete Dask task execution: expected {expected_count} results, "
+                f"but received {len(indexed_results)}. Some worker tasks failed or dropped results."
+            )
+
         indexed_results.sort(key=lambda item: item[0])
         return [res for _, res in indexed_results]
 
@@ -621,6 +646,9 @@ class DaskGenomeProcessor:
         batch_size: int | str | None = None,
     ) -> list[AlignmentResult]:
         """Align corresponding pairs of chunks across two lists using Dask tasks."""
+        if self._is_closed:
+            raise RuntimeError("Cannot perform operations on a closed DaskGenomeProcessor.")
+
         if not isinstance(reference_chunks, list):
             raise TypeError(
                 f"reference_chunks must be a list, got {type(reference_chunks).__name__}"
@@ -678,6 +706,12 @@ class DaskGenomeProcessor:
             for batch_res in raw_results:
                 indexed_results.extend(batch_res)
 
+        if len(indexed_results) != n_pairs:
+            raise DaskTaskError(
+                f"Incomplete Dask task execution: expected {n_pairs} results, "
+                f"but received {len(indexed_results)}. Some worker tasks failed or dropped results."
+            )
+
         indexed_results.sort(key=lambda item: item[0])
         return [res for _, res in indexed_results]
 
@@ -688,6 +722,9 @@ class DaskGenomeProcessor:
         batch_size: int | str | None = None,
     ) -> list[AlignmentResult]:
         """Align a batch of DNA sequence pairs using Dask tasks."""
+        if self._is_closed:
+            raise RuntimeError("Cannot perform operations on a closed DaskGenomeProcessor.")
+
         if not isinstance(pairs, list):
             raise TypeError(f"pairs must be a list, got {type(pairs).__name__}")
         if not pairs:
@@ -727,6 +764,12 @@ class DaskGenomeProcessor:
         else:
             for batch_res in raw_results:
                 indexed_results.extend(batch_res)
+
+        if len(indexed_results) != n_pairs:
+            raise DaskTaskError(
+                f"Incomplete Dask task execution: expected {n_pairs} results, "
+                f"but received {len(indexed_results)}. Some worker tasks failed or dropped results."
+            )
 
         indexed_results.sort(key=lambda item: item[0])
         return [res for _, res in indexed_results]
@@ -814,6 +857,8 @@ def process_fasta_dask(
     *,
     skip_unequal: bool = True,
     batch_size: int | str = 1,
+    client: Any | None = None,
+    scheduler: str | None = None,
     processor: DaskGenomeProcessor | None = None,
     worker_backend: str = "cpu",
 ) -> list[AlignmentResult]:
@@ -822,6 +867,10 @@ def process_fasta_dask(
         raise TypeError(f"chunk_size must be an int, got {type(chunk_size).__name__}")
     if chunk_size <= 0:
         raise ValueError(f"chunk_size must be positive, got {chunk_size}")
+
+    if not isinstance(target, str):
+        raise TypeError(f"target must be a string, got {type(target).__name__}")
+    _validate_sequence(target, "target")
 
     sequences = parse_fasta(fasta_path)
     all_chunks: list[str] = []
@@ -835,7 +884,10 @@ def process_fasta_dask(
         )
 
     with DaskGenomeProcessor(
-        default_batch_size=batch_size, worker_backend=worker_backend
+        client=client,
+        scheduler=scheduler,
+        default_batch_size=batch_size,
+        worker_backend=worker_backend,
     ) as proc:
         return proc.align_chunks(
             all_chunks, target, skip_unequal=skip_unequal, batch_size=batch_size
@@ -849,6 +901,8 @@ def process_fasta_dask_timed(
     *,
     skip_unequal: bool = True,
     batch_size: int | str = 1,
+    client: Any | None = None,
+    scheduler: str | None = None,
     processor: DaskGenomeProcessor | None = None,
     worker_backend: str = "cpu",
 ) -> tuple[list[AlignmentResult], DaskPipelineTiming]:
@@ -857,6 +911,10 @@ def process_fasta_dask_timed(
         raise TypeError(f"chunk_size must be an int, got {type(chunk_size).__name__}")
     if chunk_size <= 0:
         raise ValueError(f"chunk_size must be positive, got {chunk_size}")
+
+    if not isinstance(target, str):
+        raise TypeError(f"target must be a string, got {type(target).__name__}")
+    _validate_sequence(target, "target")
 
     t_wall_start = time.perf_counter()
 
@@ -881,7 +939,10 @@ def process_fasta_dask_timed(
         )
     else:
         with DaskGenomeProcessor(
-            default_batch_size=batch_size, worker_backend=worker_backend
+            client=client,
+            scheduler=scheduler,
+            default_batch_size=batch_size,
+            worker_backend=worker_backend,
         ) as proc:
             results = proc.align_chunks(
                 all_chunks, target, skip_unequal=skip_unequal, batch_size=batch_size

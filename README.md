@@ -16,9 +16,11 @@ GeneWeaver/
 │   ├── mock_genome.fasta    # Fast verification 2-chromosome synthetic dataset
 │   └── README.md            # Data guidance & format specifications
 ├── docs/                    # Architectural specifications and weekly sprint logs
+│   ├── architecture.md      # Comprehensive system architecture & data contracts
 │   ├── week1.md             # CPU baseline & chunker integration
 │   ├── week2.md             # CUDA kernel development & hardware validation
-│   └── week3.md             # Dask distributed alignment architecture
+│   ├── week3.md             # Dask distributed alignment architecture
+│   └── week4.md             # CUDA shared-memory optimization & sprint log
 ├── results/                 # Generated benchmark outputs and execution logs (git-ignored)
 │   └── README.md            # Results output policies
 ├── scripts/                 # CLI entry points and orchestration utilities
