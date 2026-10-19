@@ -14,6 +14,7 @@ from .dask_processor import (
     process_fasta_dask_timed,
     is_dask_available,
     get_dask_info,
+    calculate_optimal_batch_size,
 )
 
 __all__ = [
@@ -27,4 +28,5 @@ __all__ = [
     "process_fasta_dask_timed",
     "is_dask_available",
     "get_dask_info",
+    "calculate_optimal_batch_size",
 ]

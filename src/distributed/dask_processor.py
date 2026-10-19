@@ -21,6 +21,7 @@ from alignment.cpu_alignment import (
     align_chunks,
     align_chunk_pairs,
     _validate_sequence,
+    VALID_BASES,
 )
 from parser.fasta_parser import parse_fasta
 from chunking.genome_chunker import chunk_sequence
@@ -118,6 +119,61 @@ def get_dask_info() -> dict[str, Any]:
 
 
 # ── Top-level Task Callables (Picklable for worker threads / processes) ──────
+def _align_chunk_fast(chunk: str, target_norm: str, target_len: int) -> AlignmentResult:
+    """Fast alignment of a single chunk against an already-validated target.
+
+    Avoids redundant target sequence validation and re-normalization for each
+    chunk while preserving exact CPU AlignmentResult semantics and deterministic
+    exception contracts.
+    """
+    if not isinstance(chunk, str):
+        raise TypeError(f"reference must be a string, got {type(chunk).__name__}")
+
+    chunk_upper = chunk.upper()
+    invalid_chars = set(chunk_upper) - VALID_BASES
+    if invalid_chars and chunk_upper != "":
+        raise ValueError(
+            f"reference contains invalid characters: "
+            f"{', '.join(sorted(invalid_chars))}. "
+            f"Only A, C, G, T are allowed."
+        )
+
+    if len(chunk_upper) != target_len:
+        raise ValueError(
+            f"Sequences must have equal length: "
+            f"reference has {len(chunk_upper)}, query has {target_len}."
+        )
+
+    if target_len == 0:
+        return AlignmentResult(
+            matches=0,
+            mismatches=0,
+            alignment_length=0,
+            score=0.0,
+            mismatch_positions=[],
+        )
+
+    matches = 0
+    mismatches = 0
+    mismatch_positions: list[int] = []
+
+    for i in range(target_len):
+        if chunk_upper[i] == target_norm[i]:
+            matches += 1
+        else:
+            mismatches += 1
+            mismatch_positions.append(i)
+
+    score = matches / target_len
+    return AlignmentResult(
+        matches=matches,
+        mismatches=mismatches,
+        alignment_length=target_len,
+        score=score,
+        mismatch_positions=mismatch_positions,
+    )
+
+
 def _align_single_chunk_task(
     chunk_id: int,
     chunk: str,
@@ -132,32 +188,115 @@ def _align_single_chunk_task(
     chunk : str
         DNA chunk sequence string.
     target : str
-        Target DNA sequence string.
+        Target DNA sequence string (pre-normalized).
 
     Returns
     -------
     tuple[int, AlignmentResult]
         Tuple of (chunk_id, AlignmentResult).
     """
-    result = align_sequence(chunk, target)
+    result = _align_chunk_fast(chunk, target, len(target))
     return (chunk_id, result)
+
+
+def calculate_optimal_batch_size(
+    num_items: int,
+    n_workers: int | None = None,
+    tasks_per_worker: int = 4,
+) -> int:
+    """Calculate balanced task batch size to minimize scheduling latency.
+
+    Parameters
+    ----------
+    num_items : int
+        Total number of elements (chunks or sequence pairs) to align.
+    n_workers : int | None, default=None
+        Number of active worker slots. If None, defaults to 4.
+    tasks_per_worker : int, default=4
+        Target number of tasks assigned per worker to balance queue latency
+        with dynamic load distribution.
+
+    Returns
+    -------
+    int
+        Positive integer batch size (at least 1).
+    """
+    if not isinstance(num_items, int) or isinstance(num_items, bool) or num_items < 0:
+        raise ValueError(f"num_items must be a non-negative integer, got {num_items!r}")
+
+    if num_items == 0:
+        return 1
+
+    workers = n_workers if (isinstance(n_workers, int) and n_workers > 0) else 4
+    target_tasks = max(1, workers * tasks_per_worker)
+
+    if num_items <= target_tasks:
+        return max(1, num_items // workers) or 1
+
+    return max(1, (num_items + target_tasks - 1) // target_tasks)
 
 
 def _align_chunk_batch_task(
     start_idx: int,
-    chunk_indices: list[int],
+    chunk_indices: list[int] | None,
     chunks: list[str],
     target: str,
     skip_unequal: bool = False,
+    worker_backend: str = "cpu",
 ) -> list[tuple[int, AlignmentResult]]:
-    
+    """Execute alignment for a batch of chunks against target.
+
+    Supports worker_backend='cpu', 'cuda', or 'auto'. If 'cuda' or 'auto', attempts
+    GPU acceleration on the worker via cuda_align_chunks, falling back cleanly to CPU
+    if CUDA is unavailable on this worker node.
+
+    Parameters
+    ----------
+    start_idx : int
+        Starting index for contiguous chunks if chunk_indices is None.
+    chunk_indices : list[int] | None
+        Explicit list of original chunk indices, or None if chunks are
+        contiguous starting from start_idx.
+    chunks : list[str]
+        List of DNA chunk strings.
+    target : str
+        Target DNA sequence string.
+    skip_unequal : bool, default=False
+        If True, chunks differing in length from target are skipped.
+    worker_backend : str, default="cpu"
+        Alignment engine to attempt on worker ('cpu', 'cuda', 'auto').
+
+    Returns
+    -------
+    list[tuple[int, AlignmentResult]]
+        List of (chunk_index, AlignmentResult) pairs.
+    """
     target_len = len(target)
+    if worker_backend in ("cuda", "auto") and len(chunks) > 0:
+        try:
+            from alignment.cuda_alignment import is_cuda_available, cuda_align_chunks
+            if is_cuda_available():
+                cuda_res = cuda_align_chunks(chunks, target, skip_unequal=skip_unequal)
+                if chunk_indices is None:
+                    return [(start_idx + i, r) for i, r in enumerate(cuda_res)]
+                else:
+                    return [(idx, r) for idx, r in zip(chunk_indices, cuda_res)]
+        except Exception:
+            pass  # Fall back cleanly to CPU alignment
+
     indexed_results: list[tuple[int, AlignmentResult]] = []
-    for idx, chk in zip(chunk_indices, chunks):
-        if skip_unequal and len(chk) != target_len:
-            continue
-        res = align_sequence(chk, target)
-        indexed_results.append((idx, res))
+    if chunk_indices is None:
+        for i, chk in enumerate(chunks):
+            if skip_unequal and len(chk) != target_len:
+                continue
+            res = _align_chunk_fast(chk, target, target_len)
+            indexed_results.append((start_idx + i, res))
+    else:
+        for idx, chk in zip(chunk_indices, chunks):
+            if skip_unequal and len(chk) != target_len:
+                continue
+            res = _align_chunk_fast(chk, target, target_len)
+            indexed_results.append((idx, res))
     return indexed_results
 
 
@@ -173,14 +312,19 @@ def _align_single_pair_task(
 
 def _align_pair_batch_task(
     start_idx: int,
-    pair_indices: list[int],
+    pair_indices: list[int] | None,
     pairs: list[tuple[str, str]],
 ) -> list[tuple[int, AlignmentResult]]:
     """Execute CPU alignment for a batch of sequence pairs."""
     results: list[tuple[int, AlignmentResult]] = []
-    for idx, (ref, qry) in zip(pair_indices, pairs):
-        res = align_sequence(ref, qry)
-        results.append((idx, res))
+    if pair_indices is None:
+        for i, (ref, qry) in enumerate(pairs):
+            res = align_sequence(ref, qry)
+            results.append((start_idx + i, res))
+    else:
+        for idx, (ref, qry) in zip(pair_indices, pairs):
+            res = align_sequence(ref, qry)
+            results.append((idx, res))
     return results
 
 
@@ -208,17 +352,20 @@ class DaskGenomeProcessor:
         n_workers: int | None = None,
         threads_per_worker: int | None = None,
         processes: bool = False,
-        default_batch_size: int = 1,
+        default_batch_size: int | str = 1,
         scheduler: str | None = None,
         auto_start_cluster: bool = True,
+        worker_backend: str = "cpu",
     ) -> None:
         self._cluster: Any | None = None
         self._client: Any | None = None
         self._owns_client: bool = False
         self._owns_cluster: bool = False
         self._is_closed: bool = False
-        self._default_batch_size: int = 1
+        self._default_batch_size: int | str = 1
         self._scheduler: str | None = None
+        self._n_workers: int | None = n_workers
+        self._worker_backend: str = worker_backend
 
         if not is_dask_available():
             self._is_closed = True
@@ -227,10 +374,14 @@ class DaskGenomeProcessor:
                 f"Details: {_DASK_ERROR}"
             )
 
-        if not isinstance(default_batch_size, int) or default_batch_size < 1:
+        if default_batch_size != "auto" and (
+            not isinstance(default_batch_size, int)
+            or isinstance(default_batch_size, bool)
+            or default_batch_size < 1
+        ):
             self._is_closed = True
             raise ValueError(
-                f"default_batch_size must be a positive integer, got {default_batch_size}"
+                f"default_batch_size must be a positive integer or 'auto', got {default_batch_size}"
             )
 
         self._default_batch_size = default_batch_size
@@ -264,6 +415,16 @@ class DaskGenomeProcessor:
                 self._client = Client(self._cluster)
                 self._owns_cluster = True
                 self._owns_client = True
+
+    @property
+    def worker_backend(self) -> str:
+        """Return the target worker alignment backend ('cpu', 'cuda', 'auto')."""
+        return self._worker_backend
+
+    @property
+    def n_workers(self) -> int | None:
+        """Return the configured worker count, if specified."""
+        return self._n_workers
 
     @property
     def client(self) -> Any | None:
@@ -339,13 +500,27 @@ class DaskGenomeProcessor:
             except Exception as exc:
                 raise exc
 
+    def _resolve_batch_size(
+        self,
+        num_items: int,
+        batch_size: int | str | None,
+    ) -> int:
+        eff = batch_size if batch_size is not None else self._default_batch_size
+        if eff == "auto":
+            return calculate_optimal_batch_size(num_items, self._n_workers)
+        if not isinstance(eff, int) or isinstance(eff, bool) or eff < 1:
+            raise ValueError(
+                f"batch_size must be a positive integer or 'auto', got {eff}"
+            )
+        return eff
+
     def align_chunks(
         self,
         chunks: list[str],
         target: str,
         *,
         skip_unequal: bool = False,
-        batch_size: int | None = None,
+        batch_size: int | str | None = None,
     ) -> list[AlignmentResult]:
         if not isinstance(chunks, list):
             raise TypeError(f"chunks must be a list, got {type(chunks).__name__}")
@@ -367,43 +542,62 @@ class DaskGenomeProcessor:
         if not chunks:
             return []
 
-        eff_batch_size = batch_size if batch_size is not None else self._default_batch_size
-        if not isinstance(eff_batch_size, int) or eff_batch_size < 1:
-            raise ValueError(
-                f"batch_size must be a positive integer, got {eff_batch_size}"
-            )
+        eff_batch_size = self._resolve_batch_size(len(chunks), batch_size)
 
         # Prepare eligible chunks while tracking their original indices
-        valid_items: list[tuple[int, str]] = []
-        for i, chk in enumerate(chunks):
-            if skip_unequal and len(chk) != target_len:
-                continue
-            valid_items.append((i, chk))
-
-        if not valid_items:
-            return []
+        valid_items: list[tuple[int, str]] | None = None
+        if skip_unequal:
+            if any(len(chk) != target_len for chk in chunks):
+                valid_items = [
+                    (i, chk) for i, chk in enumerate(chunks) if len(chk) == target_len
+                ]
+                if not valid_items:
+                    return []
 
         # Construct Dask tasks
         task_list: list[Any] = []
-        if eff_batch_size == 1:
-            for orig_idx, chk in valid_items:
-                task_list.append(
-                    delayed(_align_single_chunk_task)(orig_idx, chk, target_norm)
-                )
-        else:
-            for b_start in range(0, len(valid_items), eff_batch_size):
-                batch_slice = valid_items[b_start : b_start + eff_batch_size]
-                batch_indices = [item[0] for item in batch_slice]
-                batch_chunks = [item[1] for item in batch_slice]
-                task_list.append(
-                    delayed(_align_chunk_batch_task)(
-                        b_start,
-                        batch_indices,
-                        batch_chunks,
-                        target_norm,
-                        skip_unequal=skip_unequal,
+        if valid_items is None:
+            # Contiguous chunk slices - avoids intermediate index list allocations
+            if eff_batch_size == 1:
+                for i, chk in enumerate(chunks):
+                    task_list.append(
+                        delayed(_align_single_chunk_task)(i, chk, target_norm)
                     )
-                )
+            else:
+                for b_start in range(0, len(chunks), eff_batch_size):
+                    batch_chunks = chunks[b_start : b_start + eff_batch_size]
+                    task_list.append(
+                        delayed(_align_chunk_batch_task)(
+                            b_start,
+                            None,
+                            batch_chunks,
+                            target_norm,
+                            skip_unequal=False,
+                            worker_backend=self._worker_backend,
+                        )
+                    )
+        else:
+            # Filtered chunks with explicit index tracking
+            if eff_batch_size == 1:
+                for orig_idx, chk in valid_items:
+                    task_list.append(
+                        delayed(_align_single_chunk_task)(orig_idx, chk, target_norm)
+                    )
+            else:
+                for b_start in range(0, len(valid_items), eff_batch_size):
+                    batch_slice = valid_items[b_start : b_start + eff_batch_size]
+                    batch_indices = [item[0] for item in batch_slice]
+                    batch_chunks = [item[1] for item in batch_slice]
+                    task_list.append(
+                        delayed(_align_chunk_batch_task)(
+                            b_start,
+                            batch_indices,
+                            batch_chunks,
+                            target_norm,
+                            skip_unequal=skip_unequal,
+                            worker_backend=self._worker_backend,
+                        )
+                    )
 
         # Execute tasks across Dask workers
         raw_results = self._execute_tasks(task_list)
@@ -417,7 +611,6 @@ class DaskGenomeProcessor:
                 indexed_results.extend(batch_res)
 
         indexed_results.sort(key=lambda item: item[0])
-
         return [res for _, res in indexed_results]
 
     def align_chunk_pairs(
@@ -425,7 +618,7 @@ class DaskGenomeProcessor:
         reference_chunks: list[str],
         query_chunks: list[str],
         *,
-        batch_size: int | None = None,
+        batch_size: int | str | None = None,
     ) -> list[AlignmentResult]:
         """Align corresponding pairs of chunks across two lists using Dask tasks."""
         if not isinstance(reference_chunks, list):
@@ -455,11 +648,7 @@ class DaskGenomeProcessor:
                     f"Each query chunk must be a string, got {type(qry).__name__} at index {idx}"
                 )
 
-        eff_batch_size = batch_size if batch_size is not None else self._default_batch_size
-        if not isinstance(eff_batch_size, int) or eff_batch_size < 1:
-            raise ValueError(
-                f"batch_size must be a positive integer, got {eff_batch_size}"
-            )
+        eff_batch_size = self._resolve_batch_size(len(reference_chunks), batch_size)
 
         task_list: list[Any] = []
         n_pairs = len(reference_chunks)
@@ -472,12 +661,12 @@ class DaskGenomeProcessor:
                     )
                 )
         else:
-            pairs = list(zip(reference_chunks, query_chunks))
             for b_start in range(0, n_pairs, eff_batch_size):
-                b_indices = list(range(b_start, min(b_start + eff_batch_size, n_pairs)))
-                b_pairs = pairs[b_start : b_start + eff_batch_size]
+                b_ref = reference_chunks[b_start : b_start + eff_batch_size]
+                b_qry = query_chunks[b_start : b_start + eff_batch_size]
+                batch_pairs = list(zip(b_ref, b_qry))
                 task_list.append(
-                    delayed(_align_pair_batch_task)(b_start, b_indices, b_pairs)
+                    delayed(_align_pair_batch_task)(b_start, None, batch_pairs)
                 )
 
         raw_results = self._execute_tasks(task_list)
@@ -496,7 +685,7 @@ class DaskGenomeProcessor:
         self,
         pairs: list[tuple[str, str]],
         *,
-        batch_size: int | None = None,
+        batch_size: int | str | None = None,
     ) -> list[AlignmentResult]:
         """Align a batch of DNA sequence pairs using Dask tasks."""
         if not isinstance(pairs, list):
@@ -514,11 +703,7 @@ class DaskGenomeProcessor:
                     f"Pair elements must be strings, got ({type(item[0]).__name__}, {type(item[1]).__name__}) at index {idx}"
                 )
 
-        eff_batch_size = batch_size if batch_size is not None else self._default_batch_size
-        if not isinstance(eff_batch_size, int) or eff_batch_size < 1:
-            raise ValueError(
-                f"batch_size must be a positive integer, got {eff_batch_size}"
-            )
+        eff_batch_size = self._resolve_batch_size(len(pairs), batch_size)
 
         task_list: list[Any] = []
         n_pairs = len(pairs)
@@ -529,10 +714,9 @@ class DaskGenomeProcessor:
                 task_list.append(delayed(_align_single_pair_task)(i, ref, qry))
         else:
             for b_start in range(0, n_pairs, eff_batch_size):
-                b_indices = list(range(b_start, min(b_start + eff_batch_size, n_pairs)))
                 b_pairs = pairs[b_start : b_start + eff_batch_size]
                 task_list.append(
-                    delayed(_align_pair_batch_task)(b_start, b_indices, b_pairs)
+                    delayed(_align_pair_batch_task)(b_start, None, b_pairs)
                 )
 
         raw_results = self._execute_tasks(task_list)
@@ -555,15 +739,22 @@ def dask_align_chunks(
     *,
     skip_unequal: bool = False,
     client: Any | None = None,
-    batch_size: int = 1,
+    batch_size: int | str = 1,
     scheduler: str | None = None,
+    processor: DaskGenomeProcessor | None = None,
+    worker_backend: str = "cpu",
 ) -> list[AlignmentResult]:
+    if processor is not None:
+        return processor.align_chunks(
+            chunks, target, skip_unequal=skip_unequal, batch_size=batch_size
+        )
     with DaskGenomeProcessor(
         client=client,
         default_batch_size=batch_size,
         scheduler=scheduler,
-    ) as processor:
-        return processor.align_chunks(
+        worker_backend=worker_backend,
+    ) as proc:
+        return proc.align_chunks(
             chunks, target, skip_unequal=skip_unequal, batch_size=batch_size
         )
 
@@ -573,16 +764,23 @@ def dask_align_chunk_pairs(
     query_chunks: list[str],
     *,
     client: Any | None = None,
-    batch_size: int = 1,
+    batch_size: int | str = 1,
     scheduler: str | None = None,
+    processor: DaskGenomeProcessor | None = None,
+    worker_backend: str = "cpu",
 ) -> list[AlignmentResult]:
     """Align corresponding pairs of chunks using Dask distributed execution."""
+    if processor is not None:
+        return processor.align_chunk_pairs(
+            reference_chunks, query_chunks, batch_size=batch_size
+        )
     with DaskGenomeProcessor(
         client=client,
         default_batch_size=batch_size,
         scheduler=scheduler,
-    ) as processor:
-        return processor.align_chunk_pairs(
+        worker_backend=worker_backend,
+    ) as proc:
+        return proc.align_chunk_pairs(
             reference_chunks, query_chunks, batch_size=batch_size
         )
 
@@ -591,16 +789,21 @@ def dask_align_sequences(
     pairs: list[tuple[str, str]],
     *,
     client: Any | None = None,
-    batch_size: int = 1,
+    batch_size: int | str = 1,
     scheduler: str | None = None,
+    processor: DaskGenomeProcessor | None = None,
+    worker_backend: str = "cpu",
 ) -> list[AlignmentResult]:
     """Align a batch of DNA sequence pairs using Dask distributed execution."""
+    if processor is not None:
+        return processor.align_sequences(pairs, batch_size=batch_size)
     with DaskGenomeProcessor(
         client=client,
         default_batch_size=batch_size,
         scheduler=scheduler,
-    ) as processor:
-        return processor.align_sequences(pairs, batch_size=batch_size)
+        worker_backend=worker_backend,
+    ) as proc:
+        return proc.align_sequences(pairs, batch_size=batch_size)
 
 
 # ── Pipeline Integration Functions (FASTA -> Parser -> Chunker -> Dask) ──────
@@ -610,8 +813,9 @@ def process_fasta_dask(
     chunk_size: int,
     *,
     skip_unequal: bool = True,
-    batch_size: int = 1,
+    batch_size: int | str = 1,
     processor: DaskGenomeProcessor | None = None,
+    worker_backend: str = "cpu",
 ) -> list[AlignmentResult]:
 
     if not isinstance(chunk_size, int) or isinstance(chunk_size, bool):
@@ -630,7 +834,9 @@ def process_fasta_dask(
             all_chunks, target, skip_unequal=skip_unequal, batch_size=batch_size
         )
 
-    with DaskGenomeProcessor(default_batch_size=batch_size) as proc:
+    with DaskGenomeProcessor(
+        default_batch_size=batch_size, worker_backend=worker_backend
+    ) as proc:
         return proc.align_chunks(
             all_chunks, target, skip_unequal=skip_unequal, batch_size=batch_size
         )
@@ -642,8 +848,9 @@ def process_fasta_dask_timed(
     chunk_size: int,
     *,
     skip_unequal: bool = True,
-    batch_size: int = 1,
+    batch_size: int | str = 1,
     processor: DaskGenomeProcessor | None = None,
+    worker_backend: str = "cpu",
 ) -> tuple[list[AlignmentResult], DaskPipelineTiming]:
     """Execute end-to-end Dask pipeline and return granular timing breakdown."""
     if not isinstance(chunk_size, int) or isinstance(chunk_size, bool):
@@ -673,7 +880,9 @@ def process_fasta_dask_timed(
             all_chunks, target, skip_unequal=skip_unequal, batch_size=batch_size
         )
     else:
-        with DaskGenomeProcessor(default_batch_size=batch_size) as proc:
+        with DaskGenomeProcessor(
+            default_batch_size=batch_size, worker_backend=worker_backend
+        ) as proc:
             results = proc.align_chunks(
                 all_chunks, target, skip_unequal=skip_unequal, batch_size=batch_size
             )
@@ -682,9 +891,15 @@ def process_fasta_dask_timed(
     t_total = time.perf_counter() - t_wall_start
 
     num_aligned = len(results)
-    num_tasks = (
-        (num_aligned + batch_size - 1) // batch_size if batch_size > 0 else num_aligned
-    )
+    if isinstance(batch_size, int) and batch_size > 0:
+        num_tasks = (num_aligned + batch_size - 1) // batch_size
+    elif batch_size == "auto":
+        eff_bs = calculate_optimal_batch_size(
+            num_aligned, processor.n_workers if processor else None
+        )
+        num_tasks = (num_aligned + eff_bs - 1) // eff_bs
+    else:
+        num_tasks = num_aligned
 
     timing = DaskPipelineTiming(
         parse_time=t_parse,

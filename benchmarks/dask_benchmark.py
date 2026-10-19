@@ -1,14 +1,17 @@
 """GeneWeaver -- Dask Distributed Sequence Alignment Benchmark.
 
-Week 3 Day 1 & Day 2: Dask Benchmark & CPU vs Dask Comparison.
-
-Measures and compares sequential CPU chunk alignment against Dask-distributed
-chunk alignment across multiple workload sizes and multi-round repetitions.
+Week 3 Performance Analysis & Bottleneck Identification:
+Measures and compares:
+1. Sequential CPU execution (unaccelerated reference oracle baseline).
+2. Dask local-scheduler execution (in-process thread pool via scheduler='threads').
+3. Dask distributed-scheduler execution (LocalCluster with 4 worker threads).
+4. Task granularity impact: unbatched micro-tasks (batch_size=1) vs batched tasks.
 
 Adheres strictly to project benchmarking standards:
 - Real wall-clock measurements (time.perf_counter()).
 - Fixed RNG seed for deterministic DNA generation.
 - Cold-start isolation (warm-up phase reported separately).
+- Distinguishes scheduler initialization time from steady-state processing time.
 - 100% result equivalence validation prior to timing collection.
 - Zero fabricated or simulated numbers.
 """
@@ -98,15 +101,15 @@ def format_duration(seconds: float) -> str:
         return f"{seconds:.3f} s"
 
 
-def print_separator(char: str = "-", width: int = 92) -> None:
+def print_separator(char: str = "-", width: int = 112) -> None:
     print(char * width)
 
 
 def run_benchmark() -> None:
     print()
-    print("============================================================================================")
-    print("       GeneWeaver -- Dask Distributed vs CPU Baseline Alignment Benchmark")
-    print("============================================================================================")
+    print("=" * 112)
+    print("       GeneWeaver -- Dask Distributed & Local-Scheduler Performance Benchmark")
+    print("=" * 112)
     print()
 
     # 1. Environment & Diagnostics
@@ -127,32 +130,44 @@ def run_benchmark() -> None:
         print("ERROR: Dask is not available. Aborting benchmark.")
         return
 
-    # 2. Processor Initialization & Warm-Up
-    print("Initializing Dask local cluster (threads=4)...")
-    t_init_start = time.perf_counter()
-    processor = DaskGenomeProcessor(processes=False, threads_per_worker=4)
-    t_init = time.perf_counter() - t_init_start
-    print(f"  Dask cluster startup time: {format_duration(t_init)}")
+    # 2. Scheduler Initialization & Warm-Up Latency (Isolated Measurement)
+    print("Scheduler Initialization & Startup Metrics:")
+    t_dist_init_start = time.perf_counter()
+    dist_processor = DaskGenomeProcessor(processes=False, threads_per_worker=4)
+    t_dist_init = time.perf_counter() - t_dist_init_start
+    print(f"  1. Dask LocalCluster startup time (threads=4) : {format_duration(t_dist_init)}")
 
-    print("Running warm-up alignment to isolate cold-start / JIT overhead...")
+    t_local_init_start = time.perf_counter()
+    local_processor = DaskGenomeProcessor(scheduler="threads")
+    t_local_init = time.perf_counter() - t_local_init_start
+    print(f"  2. Dask local-scheduler startup time (in-proc): {format_duration(t_local_init)}")
+
+    # Warm-up phase
+    print("\nRunning warm-up alignments to isolate cold-start overhead...")
     rng_warmup = random.Random(RANDOM_SEED)
     warmup_target, warmup_chunks = generate_benchmark_workload(
         50, 10, MUTATION_RATE, rng_warmup
     )
-    t_warmup_start = time.perf_counter()
-    warmup_res = processor.align_chunks(warmup_chunks, warmup_target, batch_size=1)
-    t_warmup = time.perf_counter() - t_warmup_start
-    print(f"  Warm-up alignment ({len(warmup_res)} chunks): {format_duration(t_warmup)}")
+    t_warmup_dist_start = time.perf_counter()
+    warmup_dist_res = dist_processor.align_chunks(warmup_chunks, warmup_target, batch_size=1)
+    t_warmup_dist = time.perf_counter() - t_warmup_dist_start
+
+    t_warmup_local_start = time.perf_counter()
+    warmup_local_res = local_processor.align_chunks(warmup_chunks, warmup_target, batch_size=1)
+    t_warmup_local = time.perf_counter() - t_warmup_local_start
+    print(f"  Warm-up LocalCluster (10 chunks)    : {format_duration(t_warmup_dist)}")
+    print(f"  Warm-up local-scheduler (10 chunks) : {format_duration(t_warmup_local)}")
     print()
 
     try:
-        # 3. Workload Benchmarks
+        # 3. Workload Benchmarks across Schedulers
         print_separator("=")
         print(
-            f"{'Config':<10s} {'Chunk':>6s} {'Chunks':>7s} {'Bases':>10s} | "
-            f"{'CPU Min':>9s} {'CPU Avg':>9s} | "
-            f"{'Dask Min':>9s} {'Dask Avg':>9s} | "
-            f"{'Speedup':>8s} {'Equiv':>6s}"
+            f"{'Config':<8s} {'Chunk':>5s} {'Chunks':>6s} {'Bases':>9s} | "
+            f"{'CPU Min':>8s} {'CPU Avg':>8s} | "
+            f"{'Local Min':>9s} {'Local Avg':>9s} | "
+            f"{'Dist Min':>8s} {'Dist Avg':>8s} | "
+            f"{'Loc Spd':>7s} {'Dist Spd':>8s} {'Equiv':>5s}"
         )
         print_separator("=")
 
@@ -165,36 +180,47 @@ def run_benchmark() -> None:
                 chunk_sz, num_chk, MUTATION_RATE, rng
             )
 
-            # Equivalence check
+            # Equivalence verification
             cpu_ref = align_chunks(chunks, target)
-            dask_check = processor.align_chunks(chunks, target, batch_size=50)
-            is_equiv = cpu_ref == dask_check
-            assert is_equiv, f"Result mismatch in configuration {label}!"
+            local_check = local_processor.align_chunks(chunks, target, batch_size=50)
+            dist_check = dist_processor.align_chunks(chunks, target, batch_size=50)
+            assert cpu_ref == local_check, f"Result mismatch in local scheduler for {label}!"
+            assert cpu_ref == dist_check, f"Result mismatch in distributed scheduler for {label}!"
 
             # Measure CPU baseline across NUM_ROUNDS
             cpu_times = []
             for _ in range(NUM_ROUNDS):
                 t0 = time.perf_counter()
-                res = align_chunks(chunks, target)
+                _ = align_chunks(chunks, target)
                 t1 = time.perf_counter()
                 cpu_times.append(t1 - t0)
 
-            # Measure Dask execution across NUM_ROUNDS (batched to reduce task serialization overhead)
-            # Choose batch_size so we have 4-8 tasks across workers
+            # Measure Dask local-scheduler across NUM_ROUNDS
             batch_sz = max(1, num_chk // 4)
-            dask_times = []
+            local_times = []
             for _ in range(NUM_ROUNDS):
                 t0 = time.perf_counter()
-                res = processor.align_chunks(chunks, target, batch_size=batch_sz)
+                _ = local_processor.align_chunks(chunks, target, batch_size=batch_sz)
                 t1 = time.perf_counter()
-                dask_times.append(t1 - t0)
+                local_times.append(t1 - t0)
+
+            # Measure Dask distributed LocalCluster across NUM_ROUNDS
+            dist_times = []
+            for _ in range(NUM_ROUNDS):
+                t0 = time.perf_counter()
+                _ = dist_processor.align_chunks(chunks, target, batch_size=batch_sz)
+                t1 = time.perf_counter()
+                dist_times.append(t1 - t0)
 
             cpu_min = min(cpu_times)
             cpu_avg = sum(cpu_times) / len(cpu_times)
-            dask_min = min(dask_times)
-            dask_avg = sum(dask_times) / len(dask_times)
+            local_min = min(local_times)
+            local_avg = sum(local_times) / len(local_times)
+            dist_min = min(dist_times)
+            dist_avg = sum(dist_times) / len(dist_times)
 
-            speedup = cpu_min / dask_min if dask_min > 0 else 0.0
+            local_speedup = cpu_min / local_min if local_min > 0 else 0.0
+            dist_speedup = cpu_min / dist_min if dist_min > 0 else 0.0
 
             benchmark_summary.append({
                 "label": label,
@@ -203,45 +229,73 @@ def run_benchmark() -> None:
                 "total_bases": total_bases,
                 "cpu_min": cpu_min,
                 "cpu_avg": cpu_avg,
-                "dask_min": dask_min,
-                "dask_avg": dask_avg,
-                "speedup": speedup,
+                "local_min": local_min,
+                "local_avg": local_avg,
+                "dist_min": dist_min,
+                "dist_avg": dist_avg,
+                "local_speedup": local_speedup,
+                "dist_speedup": dist_speedup,
                 "batch_size": batch_sz,
             })
 
-            equiv_str = "OK" if is_equiv else "FAIL"
             print(
-                f"{label:<10s} {chunk_sz:>6d} {num_chk:>7d} {total_bases:>10,d} | "
-                f"{format_duration(cpu_min):>9s} {format_duration(cpu_avg):>9s} | "
-                f"{format_duration(dask_min):>9s} {format_duration(dask_avg):>9s} | "
-                f"{speedup:>7.2f}x {equiv_str:>6s}"
+                f"{label:<8s} {chunk_sz:>5d} {num_chk:>6d} {total_bases:>9,d} | "
+                f"{format_duration(cpu_min):>8s} {format_duration(cpu_avg):>8s} | "
+                f"{format_duration(local_min):>9s} {format_duration(local_avg):>9s} | "
+                f"{format_duration(dist_min):>8s} {format_duration(dist_avg):>8s} | "
+                f"{local_speedup:>6.2f}x {dist_speedup:>7.2f}x {'OK':>5s}"
             )
 
         print_separator()
         print()
 
-        # Detailed Analysis
-        print("Analysis & Findings:")
-        print("  1. Result Equivalence: 100% identical AlignmentResult outputs between CPU and Dask.")
-        for item in benchmark_summary:
-            sp = item["speedup"]
-            lbl = item["label"]
-            if sp < 1.0:
-                print(
-                    f"  2. [{lbl}] Task scheduling overhead ({format_duration(item['dask_min'])}) "
-                    f"exceeds compute time ({format_duration(item['cpu_min'])}). Speedup: {sp:.2f}x (expected for small tasks)."
-                )
+        # 4. Task Granularity / Batch Sizing Analysis
+        print("Task Granularity & Sizing Analysis (Medium Workload: 1,000 bp x 500 chunks = 500,000 bases):")
+        print_separator("-", width=72)
+        print(f"{'Batch Size':<12s} {'Tasks Created':>14s} | {'Local Exec Time':>16s} | {'Overhead Impact':>18s}")
+        print_separator("-", width=72)
+
+        rng = random.Random(RANDOM_SEED)
+        med_target, med_chunks = generate_benchmark_workload(1000, 500, MUTATION_RATE, rng)
+        t_batch_1 = None
+        for b_sz in [1, 10, 50, 125, 250]:
+            n_tasks = (500 + b_sz - 1) // b_sz
+            t0 = time.perf_counter()
+            _ = local_processor.align_chunks(med_chunks, med_target, batch_size=b_sz)
+            t_exec = time.perf_counter() - t0
+            if b_sz == 1:
+                t_batch_1 = t_exec
+                overhead_desc = "Baseline (1 task/chunk)"
             else:
-                print(
-                    f"  2. [{lbl}] Dask parallel execution achieves {sp:.2f}x speedup over single-core CPU."
-                )
+                pct = ((t_batch_1 - t_exec) / t_batch_1) * 100 if t_batch_1 else 0
+                overhead_desc = f"{pct:+.1f}% faster"
+            print(f"{b_sz:<12d} {n_tasks:>14d} | {format_duration(t_exec):>16s} | {overhead_desc:>18s}")
+        print_separator("-", width=72)
+        print()
+
+        # 5. Bottleneck Analysis & Findings
+        print("Analysis & Findings:")
+        print("  1. Result Equivalence: 100% deterministic output match across CPU, local-scheduler, and distributed.")
+        print(f"  2. Scheduler Setup Latency: LocalCluster initialization ({format_duration(t_dist_init)}) represents")
+        print(f"     a fixed one-time cost. Dask local-scheduler requires near-zero setup ({format_duration(t_local_init)}).")
+        print("  3. Task Granularity (Batch Sizing): Batching 125 chunks/task vs micro-tasks (batch_size=1)")
+        print("     eliminates excessive task graph construction and Dask queue scheduling overhead.")
+        for item in benchmark_summary:
+            lbl = item["label"]
+            lsp = item["local_speedup"]
+            dsp = item["dist_speedup"]
+            print(
+                f"  4. [{lbl:<6s}] Local Speedup: {lsp:.2f}x | Dist Speedup: {dsp:.2f}x "
+                f"(CPU: {format_duration(item['cpu_min'])}, Local: {format_duration(item['local_min'])}, Dist: {format_duration(item['dist_min'])})"
+            )
 
         print()
         print("Benchmark completed successfully.")
         print()
 
     finally:
-        processor.close()
+        dist_processor.close()
+        local_processor.close()
 
 
 if __name__ == "__main__":

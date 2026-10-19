@@ -44,6 +44,7 @@ from src.distributed.dask_processor import (
     dask_align_sequences,
     process_fasta_dask,
     process_fasta_dask_timed,
+    calculate_optimal_batch_size,
     is_dask_available,
     get_dask_info,
 )
@@ -537,4 +538,165 @@ class TestDaskEndToEndPipelineIntegration:
             assert len(res.mismatch_positions) == res.mismatches
             assert 0.0 <= res.score <= 1.0
             assert res.score == pytest.approx(res.matches / res.alignment_length)
+
+
+# =============================================================================
+# 7. Optimization, Reusable Contexts, and Local Scheduler Parity Tests
+# =============================================================================
+class TestDaskOptimizationAndSchedulerModes:
+    """Tests for performance optimizations, reusable contexts, and scheduler modes."""
+
+    def test_local_scheduler_threads_parity(self):
+        """Verify Dask in-process thread scheduler matches CPU baseline exactly."""
+        chunks = ["ACGTACGTAC", "ACGTTCGTAC", "TTTTTTTTTT", "ACGTACGTAT"]
+        target = "ACGTACGTAC"
+        cpu_res = align_chunks(chunks, target)
+
+        with DaskGenomeProcessor(scheduler="threads") as proc:
+            dask_res = proc.align_chunks(chunks, target, batch_size=2)
+            assert dask_res == cpu_res
+
+    def test_dask_helpers_reusable_processor_context(self):
+        """Verify dask_align_* functional helpers accept and reuse a persistent processor."""
+        chunks = ["ACGT", "AGGT", "TCGT"]
+        target = "ACGT"
+        cpu_chunks = align_chunks(chunks, target)
+        cpu_pairs = align_chunk_pairs(chunks, chunks)
+        pairs = list(zip(chunks, chunks))
+        cpu_seqs = align_sequences(pairs)
+
+        with DaskGenomeProcessor(scheduler="threads") as proc:
+            res_chunks = dask_align_chunks(chunks, target, processor=proc)
+            res_pairs = dask_align_chunk_pairs(chunks, chunks, processor=proc)
+            res_seqs = dask_align_sequences(pairs, processor=proc)
+
+            assert res_chunks == cpu_chunks
+            assert res_pairs == cpu_pairs
+            assert res_seqs == cpu_seqs
+
+    def test_contiguous_vs_filtered_chunk_ordering(self):
+        """Verify chunk ordering is preserved for both contiguous and filtered paths."""
+        chunks_mixed = ["ACGT", "ACG", "AGGT", "A", "TCGT", "ACGTA"]
+        target = "ACGT"
+
+        with DaskGenomeProcessor(scheduler="threads") as proc:
+            # Filtered path
+            res_filtered = proc.align_chunks(chunks_mixed, target, skip_unequal=True, batch_size=2)
+            assert len(res_filtered) == 3
+            assert res_filtered == align_chunks(chunks_mixed, target, skip_unequal=True)
+
+            # Contiguous path (all equal length)
+            chunks_equal = [c for c in chunks_mixed if len(c) == len(target)]
+            res_contiguous = proc.align_chunks(chunks_equal, target, skip_unequal=False, batch_size=2)
+            assert len(res_contiguous) == 3
+            assert res_contiguous == align_chunks(chunks_equal, target)
+            assert res_filtered == res_contiguous
+
+    def test_batching_equivalence_across_granularities(self):
+        """Verify results are strictly identical across varying batch granularities."""
+        chunks = ["ACGT" * 5 for _ in range(60)]
+        target = "ACGT" * 5
+        cpu_res = align_chunks(chunks, target)
+
+        with DaskGenomeProcessor(scheduler="threads") as proc:
+            for b in [1, 3, 10, 15, 30, 60]:
+                dask_res = proc.align_chunks(chunks, target, batch_size=b)
+                assert dask_res == cpu_res
+
+
+# =============================================================================
+# 8. Batch Size Auto-Tuning and Worker Backend Tests
+# =============================================================================
+class TestDaskBatchAutoTuningAndWorkerBackend:
+    """Tests for dynamic batch auto-tuning, worker backend selection, and fallback."""
+
+    def test_calculate_optimal_batch_size_valid_ranges(self):
+        # 0 items
+        assert calculate_optimal_batch_size(0) == 1
+        # Small inputs (<= target_tasks)
+        assert calculate_optimal_batch_size(5, n_workers=4, tasks_per_worker=4) == 1
+        assert calculate_optimal_batch_size(16, n_workers=4, tasks_per_worker=4) == 4
+        # Medium inputs
+        # 100 items with 4 workers * 4 tasks = 16 tasks -> (100 + 16 - 1) // 16 = 7 items/batch
+        bs_med = calculate_optimal_batch_size(100, n_workers=4, tasks_per_worker=4)
+        assert bs_med == 7
+        # Large inputs
+        # 10,000 items with 8 workers * 4 tasks = 32 tasks -> (10000 + 32 - 1) // 32 = 313
+        bs_large = calculate_optimal_batch_size(10000, n_workers=8, tasks_per_worker=4)
+        assert bs_large == 313
+
+    def test_calculate_optimal_batch_size_input_validation(self):
+        with pytest.raises(ValueError, match="num_items must be a non-negative integer"):
+            calculate_optimal_batch_size(-5)
+        with pytest.raises(ValueError, match="num_items must be a non-negative integer"):
+            calculate_optimal_batch_size(True)  # bool is subclass of int in Python
+        with pytest.raises(ValueError, match="num_items must be a non-negative integer"):
+            calculate_optimal_batch_size("100")  # type: ignore
+
+        # n_workers fallback to 4 when None or non-positive
+        bs1 = calculate_optimal_batch_size(100, n_workers=None)
+        bs2 = calculate_optimal_batch_size(100, n_workers=0)
+        assert bs1 == bs2 == 7
+
+    def test_processor_auto_batch_size_execution(self):
+        """Verify processor and functional APIs execute cleanly with batch_size='auto'."""
+        chunks = ["ACGTACGTAC", "ACGTTCGTAC", "TTTTTTTTTT", "ACGTACGTAT"] * 10
+        target = "ACGTACGTAC"
+        cpu_res = align_chunks(chunks, target)
+
+        with DaskGenomeProcessor(scheduler="threads", default_batch_size="auto") as proc:
+            res_chunks = proc.align_chunks(chunks, target)
+            assert res_chunks == cpu_res
+
+            pairs = list(zip(chunks, chunks))
+            res_pairs = proc.align_sequences(pairs, batch_size="auto")
+            assert len(res_pairs) == len(pairs)
+
+            res_chunk_pairs = proc.align_chunk_pairs(chunks, chunks, batch_size="auto")
+            assert len(res_chunk_pairs) == len(chunks)
+
+    def test_processor_timed_pipeline_auto_batch(self):
+        """Verify process_fasta_dask_timed computes num_tasks properly with batch_size='auto'."""
+        target = "ATGCGTACGT"
+        with DaskGenomeProcessor(scheduler="threads", default_batch_size="auto") as proc:
+            results, timing = process_fasta_dask_timed(
+                MOCK_GENOME_PATH,
+                target,
+                chunk_size=10,
+                batch_size="auto",
+                processor=proc,
+            )
+            assert len(results) == 8
+            assert timing.num_aligned == 8
+            assert timing.num_tasks >= 1
+
+    def test_processor_worker_backend_properties_and_fallback(self):
+        """Verify worker_backend configuration and fallback to CPU when CUDA is absent."""
+        with DaskGenomeProcessor(scheduler="threads", worker_backend="auto") as proc:
+            assert proc.worker_backend == "auto"
+            chunks = ["ACGTACGT", "ACGTTCGT"]
+            target = "ACGTACGT"
+            res = proc.align_chunks(chunks, target)
+            assert len(res) == 2
+            assert res[0].matches == 8
+
+        with DaskGenomeProcessor(scheduler="threads", worker_backend="cuda") as proc:
+            assert proc.worker_backend == "cuda"
+            res = proc.align_chunks(chunks, target)
+            assert len(res) == 2
+            assert res[0].matches == 8
+
+    def test_invalid_batch_size_raises(self):
+        """Verify invalid batch_size values raise ValueError."""
+        with pytest.raises(ValueError, match="default_batch_size must be a positive integer or 'auto'"):
+            DaskGenomeProcessor(scheduler="threads", default_batch_size=0)
+
+        with pytest.raises(ValueError, match="default_batch_size must be a positive integer or 'auto'"):
+            DaskGenomeProcessor(scheduler="threads", default_batch_size="invalid")
+
+        with DaskGenomeProcessor(scheduler="threads") as proc:
+            with pytest.raises(ValueError, match="batch_size must be a positive integer or 'auto'"):
+                proc.align_chunks(["ACGT"], "ACGT", batch_size=-1)
+
+
 
