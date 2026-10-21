@@ -1,21 +1,3 @@
-"""GeneWeaver -- Dask Distributed Sequence Alignment Benchmark.
-
-Week 3 Performance Analysis & Bottleneck Identification:
-Measures and compares:
-1. Sequential CPU execution (unaccelerated reference oracle baseline).
-2. Dask local-scheduler execution (in-process thread pool via scheduler='threads').
-3. Dask distributed-scheduler execution (LocalCluster with 4 worker threads).
-4. Task granularity impact: unbatched micro-tasks (batch_size=1) vs batched tasks.
-
-Adheres strictly to project benchmarking standards:
-- Real wall-clock measurements (time.perf_counter()).
-- Fixed RNG seed for deterministic DNA generation.
-- Cold-start isolation (warm-up phase reported separately).
-- Distinguishes scheduler initialization time from steady-state processing time.
-- 100% result equivalence validation prior to timing collection.
-- Zero fabricated or simulated numbers.
-"""
-
 from __future__ import annotations
 
 import os

@@ -53,6 +53,16 @@ def main() -> int:
         help="Execution backend (default: cpu)",
     )
     parser.add_argument(
+        "--shared-mem",
+        action="store_true",
+        help="Enable CUDA on-chip shared-memory target caching optimization",
+    )
+    parser.add_argument(
+        "--fallback-to-cpu",
+        action="store_true",
+        help="Fallback cleanly to CPU if CUDA backend is unavailable or fails",
+    )
+    parser.add_argument(
         "--timed",
         action="store_true",
         help="Display microsecond execution timings",
@@ -65,6 +75,8 @@ def main() -> int:
     print(f"Target     : {args.target} (length: {len(args.target)})")
     print(f"Chunk Size : {args.chunk_size}")
     print(f"Backend    : {args.backend}")
+    print(f"Shared Mem : {args.shared_mem}")
+    print(f"Fallback   : {args.fallback_to_cpu}")
 
     try:
         if args.timed:
@@ -73,11 +85,18 @@ def main() -> int:
                 target=args.target,
                 chunk_size=args.chunk_size,
                 backend=args.backend,
+                use_shared_memory=args.shared_mem,
+                fallback_to_cpu=args.fallback_to_cpu,
             )
-            print(f"\nCompleted in {timings.total_pipeline_time * 1000:.3f} ms:")
+            print(f"\nCompleted in {timings.total_pipeline_time * 1000:.3f} ms (Backend used: {timings.backend}):")
             print(f"  Parse Time    : {timings.parse_time * 1000:.3f} ms")
             print(f"  Chunk Time    : {timings.chunk_time * 1000:.3f} ms")
             print(f"  Alignment Time: {timings.alignment_time * 1000:.3f} ms")
+            if timings.cuda_timing:
+                ct = timings.cuda_timing
+                print(f"  H2D Transfer  : {ct.h2d_transfer_time * 1000:.3f} ms")
+                print(f"  Kernel Exec   : {ct.kernel_execution_time * 1000:.3f} ms")
+                print(f"  D2H Transfer  : {ct.d2h_transfer_time * 1000:.3f} ms")
             print(f"  Aligned Chunks: {len(results)}")
         else:
             results = run_pipeline(
@@ -85,6 +104,8 @@ def main() -> int:
                 target=args.target,
                 chunk_size=args.chunk_size,
                 backend=args.backend,
+                use_shared_memory=args.shared_mem,
+                fallback_to_cpu=args.fallback_to_cpu,
             )
             print(f"\nAligned {len(results)} chunks successfully.")
 

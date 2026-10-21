@@ -1,25 +1,3 @@
-"""CUDA-accelerated DNA Sequence Alignment Implementation.
-
-Week 2 Day 1: CUDA Environment Setup and Initial GPU Alignment Implementation.
-
-This module provides the first working CUDA version of the DNA sequence
-alignment operation using Numba CUDA, conforming to the exact contract
-established by the Week 1 CPU reference implementation (AlignmentResult).
-
-Architecture & Execution Flow:
-    Host Input DNA Sequences
-    -> Host-side Preparation (validation, ASCII/uint8 encoding, batch matrix flattening)
-    -> Host-to-Device Memory Transfer (numba.cuda.to_device)
-    -> CUDA Kernel Execution (dna_align_kernel grid launch)
-    -> Device-to-Host Memory Transfer (copy_to_host)
-    -> Result Reconstruction (identical AlignmentResult objects)
-
-Hardware / Environment Fallback:
-    If CUDA hardware or Numba CUDA driver support is unavailable or blocked by
-    OS application control policy, functions cleanly raise CUDANotAvailableError
-    without returning fake/simulated GPU results.
-"""
-
 from __future__ import annotations
 
 import math
@@ -127,27 +105,6 @@ _init_cuda_environment()
 
 @dataclass(frozen=True)
 class CUDATimingBreakdown:
-    """Detailed timing breakdown for host/device transfers and GPU kernel execution.
-
-    All times are reported in seconds.
-
-    Attributes
-    ----------
-    host_prep_time : float
-        Time spent on host-side validation, ASCII encoding, and array flattening.
-    h2d_transfer_time : float
-        Time spent copying host memory to GPU device memory (Host-to-Device).
-    kernel_execution_time : float
-        Time spent executing the CUDA kernel on the GPU (including sync).
-    d2h_transfer_time : float
-        Time spent copying results back from GPU to host memory (Device-to-Host).
-    reconstruction_time : float
-        Time spent building AlignmentResult Python objects.
-    total_gpu_time : float
-        Total time: h2d_transfer + kernel_execution + d2h_transfer.
-    total_wall_time : float
-        End-to-end wall clock time including host prep and reconstruction.
-    """
     host_prep_time: float
     h2d_transfer_time: float
     kernel_execution_time: float
@@ -217,21 +174,6 @@ if CUDA_AVAILABLE and cuda is not None:  # pragma: no branch
         out_mismatches,
         out_mismatch_flags,
     ):
-        """Basic CUDA kernel for character-by-character DNA sequence alignment.
-
-        Thread Decomposition:
-            1D Grid mapping where each thread evaluates one (reference, query) pair.
-            Thread ID = cuda.grid(1) = blockIdx.x * blockDim.x + threadIdx.x.
-
-        Input Access:
-            Sequences are flattened 1D uint8 arrays of size (n_pairs * seq_len).
-            Thread `pair_idx` accesses slice `[pair_idx * seq_len : (pair_idx + 1) * seq_len]`.
-
-        Outputs Produced:
-            - out_matches[pair_idx]: Total matching base count.
-            - out_mismatches[pair_idx]: Total mismatching base count.
-            - out_mismatch_flags[pair_idx, i]: 1 if mismatch at index i, else 0.
-        """
         pair_idx = cuda.grid(1)
         if pair_idx < n_pairs:
             base_offset = pair_idx * seq_len
@@ -261,35 +203,6 @@ if CUDA_AVAILABLE and cuda is not None:  # pragma: no branch
         out_mismatches,
         out_mismatch_flags,
     ):
-        """CUDA kernel using on-chip shared memory for cooperative target sequence caching.
-
-        Thread Decomposition:
-            1D Grid mapping where each thread evaluates one genomic chunk against
-            a single target sequence cached in fast thread-block shared memory.
-            Thread ID = cuda.grid(1) = blockIdx.x * blockDim.x + threadIdx.x.
-
-        Cooperative Shared-Memory Loading:
-            A static 1024-byte array `s_target` is allocated in L1 shared memory per block.
-            All threads in the thread block cooperatively load the broadcast target sequence
-            from device global memory (`target_flat`) into `s_target` using a strided loop
-            across `threadIdx.x`. A subsequent `cuda.syncthreads()` barrier ensures complete
-            data visibility across all threads in the block before alignment comparison begins.
-
-        Memory Bottleneck Addressed:
-            In CRISPR / chunk alignment, hundreds or thousands of candidate windows
-            are aligned against the exact same target sequence. The baseline kernel
-            replicates the target for every pair and repeatedly fetches target bases
-            from high-latency global device memory (DRAM). This kernel:
-            1. Eliminates target replication in global memory (only 1 copy is sent to device).
-            2. Eliminates 128x redundant DRAM reads per position per block by caching
-               target bases in low-latency (1-2 cycle) L1 shared memory.
-
-        Correctness & Safety Guarantees:
-            - `cuda.syncthreads()` is called unconditionally by all threads in the block
-              to eliminate barrier deadlocks.
-            - `pair_idx < n_pairs` bounds check protects against out-of-bounds writes on tail blocks.
-            - `idx < seq_len and idx < 1024` protects against buffer overruns in shared memory.
-        """
         s_target = cuda.shared.array(shape=1024, dtype=np.uint8)
 
         tid = cuda.threadIdx.x
@@ -337,18 +250,6 @@ def _encode_sequence_ascii(seq: str) -> np.ndarray:
 def _prepare_host_buffers(
     pairs: Sequence[Tuple[str, str]],
 ) -> tuple[np.ndarray, np.ndarray, int, int]:
-    """Validate and pack input pairs into contiguous host-side numpy arrays.
-
-    Parameters
-    ----------
-    pairs : Sequence[Tuple[str, str]]
-        List or tuple of (reference, query) strings.
-
-    Returns
-    -------
-    tuple[np.ndarray, np.ndarray, int, int]
-        (refs_flat, qrys_flat, seq_len, n_pairs)
-    """
     if not isinstance(pairs, (list, tuple)):
         raise TypeError(f"pairs must be a list or tuple, got {type(pairs).__name__}")
 
@@ -408,23 +309,6 @@ def _prepare_host_buffers_target(
     chunks: Sequence[str],
     target: str,
 ) -> tuple[np.ndarray, np.ndarray, int, int]:
-    """Validate and pack genomic chunks and broadcast target into contiguous numpy arrays.
-
-    Used by the shared-memory alignment path to avoid duplicating the target sequence
-    in host and device memory.
-
-    Parameters
-    ----------
-    chunks : Sequence[str]
-        List of DNA sequence chunks.
-    target : str
-        Target DNA sequence to align against.
-
-    Returns
-    -------
-    tuple[np.ndarray, np.ndarray, int, int]
-        (refs_flat, target_flat, seq_len, n_pairs)
-    """
     if not isinstance(chunks, (list, tuple)):
         raise TypeError(f"chunks must be a list or tuple, got {type(chunks).__name__}")
     if not isinstance(target, str):
@@ -459,36 +343,7 @@ def cuda_align_sequences_timed(
     pairs: list[tuple[str, str]],
     threads_per_block: int = 128,
 ) -> tuple[list[AlignmentResult], CUDATimingBreakdown]:
-    """Align a batch of DNA sequence pairs on the GPU and return granular timings.
-
-    Detailed 5-stage measured pipeline:
-    1. Host-side Preparation: Input validation, ASCII encoding, 2D packing & flattening.
-    2. Host-to-Device Transfer: Allocate GPU buffers & copy inputs via ``cuda.to_device()``.
-    3. CUDA Kernel Execution: Launch ``dna_align_kernel`` and synchronize (GPU wall time).
-    4. Device-to-Host Transfer: Copy results back via ``copy_to_host()`` and release GPU memory.
-    5. Result Reconstruction: Build frozen ``AlignmentResult`` dataclass objects.
-
-    Parameters
-    ----------
-    pairs : list[tuple[str, str]]
-        List of (reference, query) sequence pairs.
-    threads_per_block : int, default=128
-        CUDA block dimension (threads per block).
-
-    Returns
-    -------
-    tuple[list[AlignmentResult], CUDATimingBreakdown]
-        Tuple of (results list, timing breakdown in seconds).
-
-    Raises
-    ------
-    CUDANotAvailableError
-        If Numba CUDA is not available or device initialization failed.
-    TypeError
-        If input types are invalid.
-    ValueError
-        If inputs contain invalid characters or length mismatches.
-    """
+    
     if not isinstance(pairs, list):
         raise TypeError(f"pairs must be a list, got {type(pairs).__name__}")
     if not isinstance(threads_per_block, int) or isinstance(threads_per_block, bool):
@@ -672,20 +527,6 @@ def cuda_align_sequences(
     pairs: list[tuple[str, str]],
     threads_per_block: int = 128,
 ) -> list[AlignmentResult]:
-    """Align a batch of DNA sequence pairs on the GPU using Numba CUDA.
-
-    Parameters
-    ----------
-    pairs : list[tuple[str, str]]
-        List of (reference, query) sequence pairs.
-    threads_per_block : int, default=128
-        CUDA block dimension (threads per block).
-
-    Returns
-    -------
-    list[AlignmentResult]
-        Alignment result for each pair, preserving input order.
-    """
     results, _ = cuda_align_sequences_timed(pairs, threads_per_block=threads_per_block)
     return results
 
@@ -694,22 +535,7 @@ def cuda_align_sequence(
     reference: str,
     query: str,
 ) -> AlignmentResult:
-    """Align a single pair of equal-length DNA sequences on the GPU.
-
-    Wrapper around ``cuda_align_sequences`` for single-pair invocations.
-
-    Parameters
-    ----------
-    reference : str
-        Reference DNA sequence.
-    query : str
-        Query DNA sequence.
-
-    Returns
-    -------
-    AlignmentResult
-        Result matching the CPU reference implementation.
-    """
+    
     results = cuda_align_sequences([(reference, query)])
     return results[0]
 
@@ -722,39 +548,7 @@ def cuda_align_chunks(
     threads_per_block: int = 128,
     use_shared_memory: bool = False,
 ) -> list[AlignmentResult]:
-    """Align genomic chunks against a target sequence on the GPU.
-
-    Maintains full compatibility with Member 2's chunking output.
-
-    Parameters
-    ----------
-    chunks : list[str]
-        List of DNA sequence chunks.
-    target : str
-        Target DNA sequence to align against.
-    skip_unequal : bool, default=False
-        If True, skips chunks whose length does not match ``len(target)``.
-    threads_per_block : int, default=128
-        CUDA block dimension (threads per block).
-    use_shared_memory : bool, default=False
-        If True, uses the Numba CUDA shared-memory optimization (`dna_align_shared_kernel`)
-        to cooperatively cache the target sequence in on-chip L1 shared memory.
-
-    Returns
-    -------
-    list[AlignmentResult]
-        Alignment result for each chunk.
-
-    Raises
-    ------
-    CUDANotAvailableError
-        If CUDA execution is not available in the environment.
-    TypeError
-        If input types are invalid.
-    ValueError
-        If inputs contain invalid characters or length mismatches when
-        ``skip_unequal=False``.
-    """
+    
     results, _ = cuda_align_chunks_timed(
         chunks,
         target,
@@ -772,12 +566,7 @@ def cuda_align_chunks_shared(
     skip_unequal: bool = False,
     threads_per_block: int = 128,
 ) -> list[AlignmentResult]:
-    """Align genomic chunks against a target sequence using Numba CUDA shared memory.
-
-    Convenience wrapper around ``cuda_align_chunks`` with ``use_shared_memory=True``.
-    Cooperatively loads the broadcast target sequence into L1 shared memory per block,
-    eliminating redundant target copies and global memory latency bottlenecks.
-    """
+    
     return cuda_align_chunks(
         chunks,
         target,
@@ -795,38 +584,7 @@ def cuda_align_chunks_timed(
     threads_per_block: int = 128,
     use_shared_memory: bool = False,
 ) -> tuple[list[AlignmentResult], CUDATimingBreakdown]:
-    """Align genomic chunks against a target sequence on the GPU with timing breakdown.
-
-    Parameters
-    ----------
-    chunks : list[str]
-        List of DNA sequence chunks.
-    target : str
-        Target DNA sequence to align against.
-    skip_unequal : bool, default=False
-        If True, skips chunks whose length does not match ``len(target)``.
-    threads_per_block : int, default=128
-        CUDA block dimension (threads per block).
-    use_shared_memory : bool, default=False
-        If True, enables the Week 4 shared-memory optimization where the broadcast
-        target sequence is loaded cooperatively into L1 shared memory, eliminating
-        redundant target replication across global memory.
-
-    Returns
-    -------
-    tuple[list[AlignmentResult], CUDATimingBreakdown]
-        Tuple of (results list, timing breakdown in seconds).
-
-    Raises
-    ------
-    CUDANotAvailableError
-        If CUDA execution is not available in the environment.
-    TypeError
-        If input types are invalid.
-    ValueError
-        If inputs contain invalid characters or length mismatches when
-        ``skip_unequal=False``.
-    """
+    
     if not isinstance(chunks, list):
         raise TypeError(f"chunks must be a list, got {type(chunks).__name__}")
     if not isinstance(target, str):
@@ -996,31 +754,7 @@ def cuda_align_chunk_pairs(
     *,
     threads_per_block: int = 128,
 ) -> list[AlignmentResult]:
-    """Align corresponding pairs of chunks from two chunk lists on the GPU.
-
-    Parameters
-    ----------
-    reference_chunks : list[str]
-        Reference sequence chunks.
-    query_chunks : list[str]
-        Query sequence chunks to compare against reference chunks.
-    threads_per_block : int, default=128
-        CUDA block dimension.
-
-    Returns
-    -------
-    list[AlignmentResult]
-        One result per chunk pair, in order.
-
-    Raises
-    ------
-    CUDANotAvailableError
-        If CUDA is unavailable.
-    TypeError
-        If either argument is not a list.
-    ValueError
-        If the two lists have different lengths.
-    """
+    
     if not isinstance(reference_chunks, list):
         raise TypeError(
             f"reference_chunks must be a list, got {type(reference_chunks).__name__}"

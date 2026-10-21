@@ -1,16 +1,3 @@
-"""Integration and Regression Tests for CUDA Pipeline Integration.
-
-Week 2 Day 3: CUDA Pipeline Integration and GPU Regression Testing.
-
-Verifies:
-1. End-to-end integration: FASTA Parser -> Genome Chunker -> CUDA Alignment -> Results.
-2. Direct chunk processing: Valid chunks, chunk boundaries, ordering, empty chunks.
-3. Clean dispatcher interface: Uniform execution layer for CPU and CUDA backends.
-4. CPU vs CUDA parity: Strict equivalence between CPU and CUDA results for the same inputs.
-5. Graceful fallback & error handling when CUDA runtime is unavailable in the environment.
-6. Zero regression across the existing CPU baseline.
-"""
-
 from __future__ import annotations
 
 import os

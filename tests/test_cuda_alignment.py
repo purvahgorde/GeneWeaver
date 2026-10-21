@@ -1,18 +1,3 @@
-"""Tests for CUDA DNA sequence alignment implementation.
-
-Tests CUDA results against the already validated CPU reference implementation.
-At minimum tests:
-- Exact match
-- Single mismatch
-- Multiple mismatches
-- Different sequence lengths where supported
-- Small DNA sequences
-- Empty sequences
-- Batch sequence processing
-- Error validation (type errors, invalid base characters, length mismatches)
-- Clean handling when CUDA execution is not available in the environment.
-"""
-
 from __future__ import annotations
 
 import os

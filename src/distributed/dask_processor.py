@@ -120,12 +120,7 @@ def get_dask_info() -> dict[str, Any]:
 
 # ── Top-level Task Callables (Picklable for worker threads / processes) ──────
 def _align_chunk_fast(chunk: str, target_norm: str, target_len: int) -> AlignmentResult:
-    """Fast alignment of a single chunk against an already-validated target.
-
-    Avoids redundant target sequence validation and re-normalization for each
-    chunk while preserving exact CPU AlignmentResult semantics and deterministic
-    exception contracts.
-    """
+    
     if not isinstance(chunk, str):
         raise TypeError(f"reference must be a string, got {type(chunk).__name__}")
 
@@ -179,22 +174,7 @@ def _align_single_chunk_task(
     chunk: str,
     target: str,
 ) -> tuple[int, AlignmentResult]:
-    """Execute CPU alignment for a single chunk against target.
-
-    Parameters
-    ----------
-    chunk_id : int
-        Original 0-based index of the chunk to preserve ordering.
-    chunk : str
-        DNA chunk sequence string.
-    target : str
-        Target DNA sequence string (pre-normalized).
-
-    Returns
-    -------
-    tuple[int, AlignmentResult]
-        Tuple of (chunk_id, AlignmentResult).
-    """
+    
     result = _align_chunk_fast(chunk, target, len(target))
     return (chunk_id, result)
 
@@ -204,23 +184,7 @@ def calculate_optimal_batch_size(
     n_workers: int | None = None,
     tasks_per_worker: int = 4,
 ) -> int:
-    """Calculate balanced task batch size to minimize scheduling latency.
-
-    Parameters
-    ----------
-    num_items : int
-        Total number of elements (chunks or sequence pairs) to align.
-    n_workers : int | None, default=None
-        Number of active worker slots. If None, defaults to 4.
-    tasks_per_worker : int, default=4
-        Target number of tasks assigned per worker to balance queue latency
-        with dynamic load distribution.
-
-    Returns
-    -------
-    int
-        Positive integer batch size (at least 1).
-    """
+    
     if not isinstance(num_items, int) or isinstance(num_items, bool) or num_items < 0:
         raise ValueError(f"num_items must be a non-negative integer, got {num_items!r}")
 
@@ -244,33 +208,7 @@ def _align_chunk_batch_task(
     skip_unequal: bool = False,
     worker_backend: str = "cpu",
 ) -> list[tuple[int, AlignmentResult]]:
-    """Execute alignment for a batch of chunks against target.
-
-    Supports worker_backend='cpu', 'cuda', or 'auto'. If 'cuda' or 'auto', attempts
-    GPU acceleration on the worker via cuda_align_chunks, falling back cleanly to CPU
-    if CUDA is unavailable on this worker node.
-
-    Parameters
-    ----------
-    start_idx : int
-        Starting index for contiguous chunks if chunk_indices is None.
-    chunk_indices : list[int] | None
-        Explicit list of original chunk indices, or None if chunks are
-        contiguous starting from start_idx.
-    chunks : list[str]
-        List of DNA chunk strings.
-    target : str
-        Target DNA sequence string.
-    skip_unequal : bool, default=False
-        If True, chunks differing in length from target are skipped.
-    worker_backend : str, default="cpu"
-        Alignment engine to attempt on worker ('cpu', 'cuda', 'auto').
-
-    Returns
-    -------
-    list[tuple[int, AlignmentResult]]
-        List of (chunk_index, AlignmentResult) pairs.
-    """
+    
     target_len = len(target)
     if worker_backend in ("cuda", "auto") and len(chunks) > 0:
         try:

@@ -1,30 +1,3 @@
-"""Validation and Benchmark Entry Point for CUDA DNA Alignment.
-
-Week 2 Day 4: CUDA Performance Profiling, Benchmark Refinement, and Bottleneck Analysis.
-
-This script benchmarks the CUDA implementation and the integrated pipeline:
-FASTA parsing -> Genome chunking -> Alignment (CPU vs CUDA).
-
-Methodology & Standards:
-- Cold-start vs Steady-State: Explicit warm-up execution to trigger CUDA context
-  initialization and JIT compilation, isolating cold-start overhead from steady-state measurements.
-- Repeated Measurements: 5 rounds per configuration; reporting Min (best-case), Mean,
-  and Median to ensure statistical reliability without relying on single outlier runs.
-- Fine-grained Component Breakdown:
-    * Host Preparation Time: Validation, ASCII uint8 encoding, linear buffer packing.
-    * Host-to-Device Transfer (H2D): Memory allocation and transfer to GPU global memory.
-    * Kernel Execution: GPU compute grid launch with explicit cuda.synchronize().
-    * Device-to-Host Transfer (D2H): Result retrieval with explicit cuda.synchronize().
-    * Result Reconstruction: Construction of AlignmentResult objects.
-    * GPU Total Time: H2D + Kernel + D2H.
-    * Total Wall-Clock Time: Complete end-to-end duration.
-- Bottleneck Analysis: Component percentage breakdown to identify primary bottlenecks
-  (PCI-e transfer bound vs compute bound vs host serialization).
-- Truthful Reporting: Real measurements only. If CUDA execution is constrained by the
-  environment (e.g. missing NVVM compiler library), the exact diagnostic state is reported
-  honestly and fallback handling is verified without fake numbers.
-"""
-
 from __future__ import annotations
 
 import math

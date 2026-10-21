@@ -1,11 +1,3 @@
-"""Integration pipeline connecting Member 2's parser/chunker with Member 1's CPU/CUDA alignment.
-
-Week 2 Day 3: CUDA Pipeline Integration.
-
-Provides an end-to-end execution path:
-FASTA file -> BioPython SeqIO parser -> Genome chunker -> DNA Chunks -> Alignment (CPU or CUDA).
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass

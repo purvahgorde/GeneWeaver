@@ -50,6 +50,7 @@ GeneWeaver/
 
 - Python 3.10+ (tested on Python 3.13)
 - Windows, Linux, or macOS
+- *Optional for GPU Acceleration*: NVIDIA GPU with Compute Capability $\ge 5.0$, NVIDIA Display Driver, and CUDA Toolkit (tested on Ampere RTX 2050 Laptop GPU with CUDA 13.4).
 
 ### Installation
 
@@ -80,6 +81,15 @@ python scripts/run_pipeline.py
 # Run with microsecond timings breakdown:
 python scripts/run_pipeline.py --timed
 
+# Run with GPU CUDA backend and shared-memory target caching:
+python scripts/run_pipeline.py --backend cuda --shared-mem --timed
+
+# Run with auto-backend selection (CUDA if available, otherwise CPU):
+python scripts/run_pipeline.py --backend auto --shared-mem --timed
+
+# Run with explicit fallback to CPU if CUDA fails or is unavailable:
+python scripts/run_pipeline.py --backend cuda --fallback-to-cpu --timed
+
 # Run with a custom FASTA file and target sequence:
 python scripts/run_pipeline.py --fasta data/mock_genome.fasta --target ATGCGTACGT --chunk-size 10 --timed
 ```
@@ -91,10 +101,20 @@ python scripts/run_pipeline.py --fasta data/mock_genome.fasta --target ATGCGTACG
 Run the complete test suite across all modules:
 
 ```bash
-pytest -v
+# Run all test suites:
+pytest tests/ src/tests/ -v
+
+# Run only CUDA alignment unit tests:
+pytest tests/test_cuda_alignment.py -v
+
+# Run pipeline integration tests:
+pytest tests/test_gpu_pipeline_integration.py -v
+
+# Run Dask distributed tests:
+pytest tests/test_dask_processor.py -v
 ```
 
-> **Note on CUDA Tests:** If an NVIDIA GPU or compiler toolchain (`nvvm.dll`) is not present in the runtime environment, CUDA-specific kernel tests are safely detected and skipped without failure or false reporting.
+> **Note on CUDA Tests:** If an NVIDIA GPU or compiler toolchain (`nvvm.dll`) is not present in the runtime environment, CUDA-specific kernel tests are safely detected and skipped without failure or false reporting. On systems without GPU hardware, CUDA kernel logic can also be tested using Numba's official CUDA software simulator (`$env:NUMBA_ENABLE_CUDASIM = "1"`).
 
 ---
 
@@ -109,7 +129,7 @@ python scripts/run_benchmarks.py cpu
 # Run Dask distributed benchmark:
 python scripts/run_benchmarks.py dask
 
-# Run CUDA benchmark:
+# Run CUDA baseline & shared-memory comparative benchmark:
 python scripts/run_benchmarks.py cuda
 
 # Run all suites sequentially:
