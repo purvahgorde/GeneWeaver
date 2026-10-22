@@ -370,6 +370,102 @@ def run_cuda_profiling_and_benchmark() -> None:
         )
     print("-" * 106)
 
+    # 8. Baseline CUDA vs Shared-Memory CUDA Performance Comparison
+    print_section(f"Baseline CUDA vs Shared-Memory CUDA Comparison ({NUM_ROUNDS} rounds)")
+    print(
+        f"{'Chunk L':>8} {'Chunks':>7} | "
+        f"{'Base H2D':>9} {'Base Kern':>10} {'Base Wall':>10} | "
+        f"{'Shmem H2D':>10} {'Shmem Kern':>11} {'Shmem Wall':>11} | "
+        f"{'Kern Spd':>9} {'Wall Spd':>9}"
+    )
+    print("-" * 106)
+
+    shared_configs = [
+        (100, 1_000),
+        (512, 1_000),
+        (1024, 1_000),
+    ]
+
+    comparison_records: list[dict[str, Any]] = []
+
+    for seq_len, num_chunks in shared_configs:
+        rng = random.Random(RANDOM_SEED)
+        target = generate_random_dna(seq_len, rng)
+        chunks = [
+            generate_pair_with_mutations(seq_len, MUTATION_RATE, rng)[1]
+            for _ in range(num_chunks)
+        ]
+
+        # Warmup both kernels
+        _ = cuda_align_chunks_timed(chunks[:10], target, use_shared_memory=False)
+        _ = cuda_align_chunks_timed(chunks[:10], target, use_shared_memory=True)
+
+        # Baseline
+        base_h2d, base_kern, base_wall = [], [], []
+        for _ in range(NUM_ROUNDS):
+            _, timing_b = cuda_align_chunks_timed(chunks, target, use_shared_memory=False)
+            base_h2d.append(timing_b.h2d_transfer_time)
+            base_kern.append(timing_b.kernel_execution_time)
+            base_wall.append(timing_b.total_wall_time)
+
+        # Shared
+        shmem_h2d, shmem_kern, shmem_wall = [], [], []
+        for _ in range(NUM_ROUNDS):
+            _, timing_s = cuda_align_chunks_timed(chunks, target, use_shared_memory=True)
+            shmem_h2d.append(timing_s.h2d_transfer_time)
+            shmem_kern.append(timing_s.kernel_execution_time)
+            shmem_wall.append(timing_s.total_wall_time)
+
+        min_base_h2d = min(base_h2d)
+        min_base_kern = min(base_kern)
+        min_base_wall = min(base_wall)
+
+        min_shmem_h2d = min(shmem_h2d)
+        min_shmem_kern = min(shmem_kern)
+        min_shmem_wall = min(shmem_wall)
+
+        kern_spd = min_base_kern / min_shmem_kern if min_shmem_kern > 0 else 1.0
+        wall_spd = min_base_wall / min_shmem_wall if min_shmem_wall > 0 else 1.0
+
+        comparison_records.append({
+            "seq_len": seq_len,
+            "num_chunks": num_chunks,
+            "baseline_h2d_s": min_base_h2d,
+            "baseline_kernel_s": min_base_kern,
+            "baseline_wall_s": min_base_wall,
+            "shared_h2d_s": min_shmem_h2d,
+            "shared_kernel_s": min_shmem_kern,
+            "shared_wall_s": min_shmem_wall,
+            "kernel_speedup": kern_spd,
+            "wall_speedup": wall_spd,
+        })
+
+        print(
+            f"{seq_len:>8,d} {num_chunks:>7,d} | "
+            f"{format_time(min_base_h2d):>9} {format_time(min_base_kern):>10} {format_time(min_base_wall):>10} | "
+            f"{format_time(min_shmem_h2d):>10} {format_time(min_shmem_kern):>11} {format_time(min_shmem_wall):>11} | "
+            f"{kern_spd:>8.2f}x {wall_spd:>8.2f}x"
+        )
+    print("-" * 106)
+
+    # Save benchmark records to results/ directory
+    try:
+        import json
+        results_dir = REPO_ROOT / "results"
+        results_dir.mkdir(exist_ok=True)
+        out_file = results_dir / "cuda_benchmark_results.json"
+        with open(out_file, "w") as f:
+            json.dump({
+                "platform": platform.platform(),
+                "python": sys.version.split()[0],
+                "gpu": cuda_info.get("device_name"),
+                "compute_capability": cuda_info.get("compute_capability"),
+                "comparisons": comparison_records,
+            }, f, indent=2)
+        print(f"\n  Saved reproducible benchmark records to: {out_file.relative_to(REPO_ROOT)}")
+    except Exception as exc:
+        print(f"\n  Warning: Could not save results file: {exc}")
+
 
 if __name__ == "__main__":
     run_cuda_profiling_and_benchmark()

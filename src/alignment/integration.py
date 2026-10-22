@@ -28,7 +28,6 @@ from alignment.dispatcher import align_chunks_dispatch, normalize_backend
 
 @dataclass(frozen=True)
 class PipelineTimingBreakdown:
-
     parse_time: float
     chunk_time: float
     alignment_time: float
@@ -49,8 +48,9 @@ def run_pipeline(
     skip_unequal: bool = True,
     threads_per_block: int = 128,
     use_shared_memory: bool = False,
+    fallback_to_cpu: bool = False,
 ) -> list[AlignmentResult]:
-    
+    """Execute end-to-end pipeline: parse FASTA -> chunk -> align via selected backend."""
     if not isinstance(chunk_size, int) or isinstance(chunk_size, bool):
         raise TypeError(f"chunk_size must be an int, got {type(chunk_size).__name__}")
     if chunk_size <= 0:
@@ -71,6 +71,7 @@ def run_pipeline(
         skip_unequal=skip_unequal,
         threads_per_block=threads_per_block,
         use_shared_memory=use_shared_memory,
+        fallback_to_cpu=fallback_to_cpu,
     )
 
 
@@ -83,8 +84,9 @@ def run_pipeline_timed(
     skip_unequal: bool = True,
     threads_per_block: int = 128,
     use_shared_memory: bool = False,
+    fallback_to_cpu: bool = False,
 ) -> tuple[list[AlignmentResult], PipelineTimingBreakdown]:
-    
+    """Execute end-to-end pipeline with stage timings and truthful backend reporting."""
     if not isinstance(chunk_size, int) or isinstance(chunk_size, bool):
         raise TypeError(f"chunk_size must be an int, got {type(chunk_size).__name__}")
     if chunk_size <= 0:
@@ -107,21 +109,60 @@ def run_pipeline_timed(
         all_chunks.extend(chunks)
     t_chunk = time.perf_counter() - t_chunk_start
 
-    # Stage 3: Alignment (CPU or CUDA)
+    # Stage 3: Alignment (CPU or CUDA with transparent fallback)
     cuda_timing: CUDATimingBreakdown | None = None
+    actual_backend = norm_backend
+
     if norm_backend == "cuda":
-        results, cuda_timing = cuda_align_chunks_timed(
-            all_chunks,
-            target,
-            skip_unequal=skip_unequal,
-            threads_per_block=threads_per_block,
-            use_shared_memory=use_shared_memory,
-        )
-        t_align = cuda_timing.total_wall_time
-    else:
+        try:
+            results, cuda_timing = cuda_align_chunks_timed(
+                all_chunks,
+                target,
+                skip_unequal=skip_unequal,
+                threads_per_block=threads_per_block,
+                use_shared_memory=use_shared_memory,
+            )
+            t_align = cuda_timing.total_wall_time
+            actual_backend = "cuda"
+        except (CUDANotAvailableError, Exception):
+            if not fallback_to_cpu:
+                raise
+            # Safe, reliable fallback to CPU
+            t_align_start = time.perf_counter()
+            results = align_chunks(all_chunks, target, skip_unequal=skip_unequal)
+            t_align = time.perf_counter() - t_align_start
+            actual_backend = "cpu (fallback)"
+            cuda_timing = None
+    elif norm_backend == "auto":
+        if is_cuda_available():
+            try:
+                results, cuda_timing = cuda_align_chunks_timed(
+                    all_chunks,
+                    target,
+                    skip_unequal=skip_unequal,
+                    threads_per_block=threads_per_block,
+                    use_shared_memory=use_shared_memory,
+                )
+                t_align = cuda_timing.total_wall_time
+                actual_backend = "cuda"
+            except Exception:
+                # GPU failed; fallback cleanly to CPU
+                t_align_start = time.perf_counter()
+                results = align_chunks(all_chunks, target, skip_unequal=skip_unequal)
+                t_align = time.perf_counter() - t_align_start
+                actual_backend = "cpu (fallback)"
+                cuda_timing = None
+        else:
+            t_align_start = time.perf_counter()
+            results = align_chunks(all_chunks, target, skip_unequal=skip_unequal)
+            t_align = time.perf_counter() - t_align_start
+            actual_backend = "cpu"
+            cuda_timing = None
+    else:  # cpu
         t_align_start = time.perf_counter()
         results = align_chunks(all_chunks, target, skip_unequal=skip_unequal)
         t_align = time.perf_counter() - t_align_start
+        actual_backend = "cpu"
 
     total_time = time.perf_counter() - t_wall_start
 
@@ -133,7 +174,7 @@ def run_pipeline_timed(
         num_sequences=len(sequences),
         num_chunks=len(all_chunks),
         num_aligned=len(results),
-        backend=norm_backend,
+        backend=actual_backend,
         cuda_timing=cuda_timing,
     )
 

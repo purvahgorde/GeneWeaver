@@ -224,9 +224,20 @@ if CUDA_AVAILABLE and cuda is not None:  # pragma: no branch
             matches = 0
             mismatches = 0
 
-            for i in range(seq_len):
+            limit = seq_len if seq_len <= 1024 else 1024
+            for i in range(limit):
                 r_char = refs_flat[base_offset + i]
                 q_char = s_target[i]
+                if r_char == q_char:
+                    matches += 1
+                    out_mismatch_flags[pair_idx, i] = 0
+                else:
+                    mismatches += 1
+                    out_mismatch_flags[pair_idx, i] = 1
+
+            for i in range(limit, seq_len):
+                r_char = refs_flat[base_offset + i]
+                q_char = target_flat[i]
                 if r_char == q_char:
                     matches += 1
                     out_mismatch_flags[pair_idx, i] = 0

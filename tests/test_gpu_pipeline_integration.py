@@ -359,3 +359,146 @@ class TestPipelineInputValidation:
         fasta.write_text(">seq\nACGT\n")
         with pytest.raises(ValueError, match="target contains invalid characters"):
             run_pipeline(fasta, "ACGN", chunk_size=4)
+
+
+# ═════════════════════════════════════════════════════════════════════════
+#  6. Backend Selection, Explicit Reporting, and Fallback Reliability Tests
+# ═════════════════════════════════════════════════════════════════════════
+class TestBackendSelectionAndFallbackReliability:
+    """Verifies Week 4 Day 4 & 5 backend selection, reliability, and fallback reporting."""
+
+    @pytest.fixture
+    def mock_fasta_path(self):
+        path = REPO_ROOT / "data" / "mock_genome.fasta"
+        assert path.exists()
+        return path
+
+    def test_normalize_backend_auto(self):
+        assert normalize_backend("auto") == "auto"
+        assert normalize_backend("AUTO") == "auto"
+
+    def test_align_sequence_dispatch_auto(self):
+        res = align_sequence_dispatch("ACGT", "ACCT", backend="auto")
+        assert res.matches == 3
+        assert res.mismatches == 1
+        assert res.score == 0.75
+
+    def test_align_sequences_dispatch_auto(self):
+        pairs = [("ACGT", "ACGT"), ("ACGT", "AGGT")]
+        res = align_sequences_dispatch(pairs, backend="auto")
+        assert len(res) == 2
+        assert res[0].matches == 4
+        assert res[1].matches == 3
+
+    def test_align_chunks_dispatch_auto(self):
+        chunks = ["ACGT", "ACCT", "AAAA"]
+        res = align_chunks_dispatch(chunks, "ACGT", backend="auto")
+        assert len(res) == 3
+        assert res[0].matches == 4
+        assert res[1].matches == 3
+        assert res[2].matches == 1
+
+    def test_align_chunk_pairs_dispatch_auto(self):
+        ref_chunks = ["ACGT", "GGCC"]
+        qry_chunks = ["ACGT", "GGAA"]
+        res = align_chunk_pairs_dispatch(ref_chunks, qry_chunks, backend="auto")
+        assert len(res) == 2
+        assert res[0].matches == 4
+        assert res[1].matches == 2
+
+    def test_run_pipeline_auto(self, mock_fasta_path):
+        results = run_pipeline(mock_fasta_path, "ATGCGTACGT", chunk_size=10, backend="auto", skip_unequal=True)
+        assert len(results) == 8
+        assert results[0].matches == 10
+
+    def test_run_pipeline_timed_auto_reporting(self, mock_fasta_path):
+        results, timing = run_pipeline_timed(
+            mock_fasta_path, "ATGCGTACGT", chunk_size=10, backend="auto", skip_unequal=True
+        )
+        assert len(results) == 8
+        assert isinstance(timing, PipelineTimingBreakdown)
+        expected_backend = "cuda" if is_cuda_available() else "cpu"
+        assert timing.backend == expected_backend
+
+    def test_run_pipeline_cuda_fallback_to_cpu_when_forced_failure(self, mock_fasta_path, monkeypatch):
+        """When CUDA fails and fallback_to_cpu=True, pipeline cleanly falls back to CPU."""
+        def mock_cuda_fail(*args, **kwargs):
+            raise RuntimeError("Simulated GPU driver crash")
+
+        import alignment.integration as integ
+        monkeypatch.setattr(integ, "cuda_align_chunks_timed", mock_cuda_fail)
+
+        # fallback_to_cpu=False must propagate error
+        with pytest.raises(RuntimeError, match="Simulated GPU driver crash"):
+            run_pipeline_timed(
+                mock_fasta_path, "ATGCGTACGT", chunk_size=10, backend="cuda", fallback_to_cpu=False
+            )
+
+        # fallback_to_cpu=True must fall back to CPU and report backend as 'cpu (fallback)'
+        results, timing = run_pipeline_timed(
+            mock_fasta_path, "ATGCGTACGT", chunk_size=10, backend="cuda", fallback_to_cpu=True
+        )
+        assert len(results) == 8
+        assert results[0].matches == 10
+        assert results[0].mismatches == 0
+        assert results[0].score == 1.0
+        assert timing.backend == "cpu (fallback)"
+        assert timing.cuda_timing is None
+
+    def test_run_pipeline_auto_fallback_when_cuda_fails(self, mock_fasta_path, monkeypatch):
+        """When backend='auto' and CUDA fails, pipeline falls back to CPU and reports 'cpu (fallback)'."""
+        def mock_cuda_fail(*args, **kwargs):
+            raise RuntimeError("Simulated GPU out of memory")
+
+        import alignment.integration as integ
+        monkeypatch.setattr(integ, "cuda_align_chunks_timed", mock_cuda_fail)
+        monkeypatch.setattr(integ, "is_cuda_available", lambda: True)
+
+        results, timing = run_pipeline_timed(
+            mock_fasta_path, "ATGCGTACGT", chunk_size=10, backend="auto", skip_unequal=True
+        )
+        assert len(results) == 8
+        assert results[0].matches == 10
+        assert timing.backend == "cpu (fallback)"
+
+    def test_dispatch_cuda_fallback_to_cpu(self, monkeypatch):
+        """Dispatch layer fallback_to_cpu handles forced GPU failure cleanly."""
+        def mock_fail(*args, **kwargs):
+            raise RuntimeError("GPU device execution failure")
+
+        import alignment.dispatcher as disp
+        monkeypatch.setattr(disp, "cuda_align_sequence", mock_fail)
+        monkeypatch.setattr(disp, "cuda_align_sequences", mock_fail)
+        monkeypatch.setattr(disp, "cuda_align_chunks", mock_fail)
+        monkeypatch.setattr(disp, "cuda_align_chunk_pairs", mock_fail)
+
+        # Without fallback -> raises
+        with pytest.raises(RuntimeError):
+            align_sequence_dispatch("ACGT", "ACGT", backend="cuda", fallback_to_cpu=False)
+
+        # With fallback -> CPU handles cleanly
+        res = align_sequence_dispatch("ACGT", "ACGT", backend="cuda", fallback_to_cpu=True)
+        assert res.matches == 4
+
+        res_seqs = align_sequences_dispatch([("ACGT", "ACGT")], backend="cuda", fallback_to_cpu=True)
+        assert len(res_seqs) == 1 and res_seqs[0].matches == 4
+
+        res_chunks = align_chunks_dispatch(["ACGT"], "ACGT", backend="cuda", fallback_to_cpu=True)
+        assert len(res_chunks) == 1 and res_chunks[0].matches == 4
+
+        res_pairs = align_chunk_pairs_dispatch(["ACGT"], ["ACGT"], backend="cuda", fallback_to_cpu=True)
+        assert len(res_pairs) == 1 and res_pairs[0].matches == 4
+
+    def test_pipeline_entrypoint_with_fallback(self, mock_fasta_path):
+        """Top-level src/pipeline.py run_alignment_pipeline accepts all arguments seamlessly."""
+        from src.pipeline import run_alignment_pipeline
+        results = run_alignment_pipeline(
+            mock_fasta_path,
+            target="ATGCGTACGT",
+            chunk_size=10,
+            backend="auto",
+            fallback_to_cpu=True,
+            use_shared_memory=True,
+        )
+        assert len(results) == 8
+        assert results[0].matches == 10

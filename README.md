@@ -132,6 +132,9 @@ python scripts/run_benchmarks.py dask
 # Run CUDA baseline & shared-memory comparative benchmark:
 python scripts/run_benchmarks.py cuda
 
+# Run multi-backend comparative benchmark (CPU vs CUDA vs Dask):
+python scripts/run_benchmarks.py comparative
+
 # Run all suites sequentially:
 python scripts/run_benchmarks.py all
 ```

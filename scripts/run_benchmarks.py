@@ -22,14 +22,14 @@ def main() -> int:
     )
     parser.add_argument(
         "suite",
-        choices=["cpu", "cuda", "dask", "all"],
+        choices=["cpu", "cuda", "dask", "comparative", "all"],
         default="cpu",
         nargs="?",
-        help="Benchmark suite to run (cpu, cuda, dask, all). Default: cpu",
+        help="Benchmark suite to run (cpu, cuda, dask, comparative, all). Default: cpu",
     )
 
     args = parser.parse_args()
-    suites = ["cpu", "cuda", "dask"] if args.suite == "all" else [args.suite]
+    suites = ["cpu", "cuda", "dask", "comparative"] if args.suite == "all" else [args.suite]
 
     for suite_name in suites:
         bench_script = _BENCHMARKS_DIR / f"{suite_name}_benchmark.py"

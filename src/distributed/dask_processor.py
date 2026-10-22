@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import sys
+import threading
 import time
 from typing import Any, Sequence
 
@@ -200,6 +201,9 @@ def calculate_optimal_batch_size(
     return max(1, (num_items + target_tasks - 1) // target_tasks)
 
 
+_GPU_TASK_LOCK = threading.Lock()
+
+
 def _align_chunk_batch_task(
     start_idx: int,
     chunk_indices: list[int] | None,
@@ -214,7 +218,8 @@ def _align_chunk_batch_task(
         try:
             from alignment.cuda_alignment import is_cuda_available, cuda_align_chunks
             if is_cuda_available():
-                cuda_res = cuda_align_chunks(chunks, target, skip_unequal=skip_unequal)
+                with _GPU_TASK_LOCK:
+                    cuda_res = cuda_align_chunks(chunks, target, skip_unequal=skip_unequal)
                 if chunk_indices is None:
                     return [(start_idx + i, r) for i, r in enumerate(cuda_res)]
                 else:
