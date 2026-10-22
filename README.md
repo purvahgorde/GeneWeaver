@@ -21,7 +21,7 @@ GeneWeaver is a high-performance, multi-backend CRISPR sequence alignment and ge
                                      ▼
                       ┌──────────────────────────────┐
                       │     Alignment Dispatcher     │
-                      │       ('cpu', 'cuda')        │
+                      │   (Backend / Pipeline CLI)   │
                       └──────┬───────┬───────┬───────┘
                              │       │       │
             ┌────────────────┘       │       └────────────────┐
@@ -41,13 +41,13 @@ GeneWeaver is a high-performance, multi-backend CRISPR sequence alignment and ge
                       │       Exact Positions)       │
                       └──────────────┬───────────────┘
                                      │
-                 ┌───────────────────┴───────────────────┐
-                 ▼                                       ▼
-  ┌──────────────────────────────┐        ┌──────────────────────────────┐
-  │      Biological Scoring      │        │    Mismatch Visualization    │
-  │ (GC content, PAM NGG motifs, │        │ (Rich color-coded display,   │
-  │   aggregate affinity metrics)│        │  ASCII comparison, Textual)  │
-  └──────────────────────────────┘        └──────────────────────────────┘
+                  ┌──────────────────┴──────────────────┐
+                  ▼                                     ▼
+   ┌──────────────────────────────┐      ┌──────────────────────────────┐
+   │      Biological Scoring      │      │    Mismatch Visualization    │
+   │ (GC content, PAM NGG motifs, │      │ (Rich color-coded display,   │
+   │   aggregate affinity metrics)│      │  ASCII comparison, Textual)  │
+   └──────────────────────────────┘      └──────────────────────────────┘
 ```
 
 ---
@@ -88,10 +88,12 @@ GeneWeaver/
 │   ├── cuda_benchmark.py        # CUDA baseline & shared-memory benchmark
 │   └── dask_benchmark.py        # Dask scaling & batch size benchmark
 ├── data/                    # Genomic input datasets
+│   ├── demo_crispr.fasta    # 4-sequence CRISPR guide RNA evaluation dataset
 │   ├── mock_genome.fasta    # 2-chromosome synthetic verification genome
 │   └── README.md            # Data format documentation
 ├── docs/                    # System architecture & weekly development logs
 │   ├── architecture.md      # Full architecture & invariants specification
+│   ├── presentation.md      # Project presentation outline & slide notes
 │   ├── week1.md             # Week 1: CPU baseline & pipeline foundation
 │   ├── week2.md             # Week 2: CUDA acceleration & host-device pipeline
 │   ├── week3.md             # Week 3: Dask distributed processing & auto-tuning
@@ -135,6 +137,7 @@ GeneWeaver/
 ### Setup Instructions
 1. Clone the repository and navigate into the root directory:
    ```bash
+   git clone https://github.com/pranaym17/GeneWeaver.git
    cd GeneWeaver
    ```
 
@@ -161,47 +164,67 @@ GeneWeaver/
 Execute the end-to-end genomic alignment pipeline via `scripts/run_pipeline.py`:
 
 ```bash
-# Basic run using default mock genome with CPU backend:
-python scripts/run_pipeline.py
+# 1. Run CPU pipeline on CRISPR demo dataset with biological scoring & visualizer:
+python scripts/run_pipeline.py --fasta data/demo_crispr.fasta --target GAGTCCGAGCAGAAGAAGAA --chunk-size 20 --backend cpu --score --visualize --timed
 
-# Run with execution stage timing breakdown:
-python scripts/run_pipeline.py --timed
+# 2. Run GPU-accelerated pipeline with shared-memory target caching:
+python scripts/run_pipeline.py --fasta data/mock_genome.fasta --target ATGCGTACGT --chunk-size 10 --backend cuda --shared-mem --timed
 
-# Run on GPU with CUDA acceleration and shared-memory target caching:
-python scripts/run_pipeline.py --backend cuda --shared-mem --timed
+# 3. Run Dask distributed pipeline:
+python scripts/run_pipeline.py --fasta data/mock_genome.fasta --target ATGCGTACGT --chunk-size 10 --backend dask --timed
 
-# Run with automatic backend detection (CUDA if available, otherwise CPU):
+# 4. Run with automatic backend detection (CUDA if available, otherwise CPU):
 python scripts/run_pipeline.py --backend auto --timed
 
-# Run with explicit fallback to CPU if CUDA is unavailable:
+# 5. Run with explicit fallback to CPU if CUDA/Dask is unavailable:
 python scripts/run_pipeline.py --backend cuda --fallback-to-cpu --timed
-
-# Run with custom FASTA file, target sequence, and chunk size:
-python scripts/run_pipeline.py --fasta data/mock_genome.fasta --target ATGCGTACGT --chunk-size 10 --timed
 ```
 
-### Example Input and Output
+### Reproducible Demo Example
 
-**Sample Command:**
+**Command:**
 ```bash
-python scripts/run_pipeline.py --fasta data/mock_genome.fasta --target ATGCGTACGT --chunk-size 10 --timed
+python scripts/run_pipeline.py --fasta data/demo_crispr.fasta --target GAGTCCGAGCAGAAGAAGAA --chunk-size 20 --backend cpu --score --visualize
 ```
 
 **Expected Console Output:**
 ```text
 --- GeneWeaver Pipeline Runner ---
-FASTA File : C:\Pm\GeneWeaver\data\mock_genome.fasta
-Target     : ATGCGTACGT (length: 10)
-Chunk Size : 10
+FASTA File : data/demo_crispr.fasta
+Target     : GAGTCCGAGCAGAAGAAGAA (length: 20)
+Chunk Size : 20
 Backend    : cpu
 Shared Mem : False
 Fallback   : False
 
-Completed in 0.315 ms (Backend used: cpu):
-  Parse Time    : 0.264 ms
-  Chunk Time    : 0.007 ms
-  Alignment Time: 0.042 ms
-  Aligned Chunks: 8
+Aligned 4 chunks successfully.
+
+--- Biological Scoring Summary ---
+Target GC Content : 50.00%
+Total Chunks      : 4
+Total Matches     : 66
+Total Mismatches  : 14
+Avg Similarity    : 82.50%
+Avg Score         : 0.8250
+Max Score         : 1.0000
+Min Score         : 0.4500
+
+--- DNA Alignment Visualization ---
+TARGET  GAGTCCGAGCAGAAGAAGAA
+
+Legend: Match Mismatch
+
+Chunk 1   GAGTCCGAGCAGAAGAAGAA
+         Perfect match
+
+Chunk 2   GAGTCCGAGCAGAAGAAGAC
+         Mismatch positions: 20
+
+Chunk 3   GAGTCCGAGCAGAACAAGAC
+         Mismatch positions: 15, 20
+
+Chunk 4   AAAAAAAAAAAAAAAAAAAA
+         Mismatch positions: 1, 3, 4, 5, 6, 7, 9, 10, 12, 15, 18
 ```
 
 ---
@@ -284,19 +307,19 @@ The following measurements were recorded on a physical test workstation:
 ### Comparative Benchmark Summary (`results/comparative_benchmark_results.json`)
 
 | Workload | Sequence Length | Chunks | Total Bases | CPU Min | CUDA Base | CUDA Shared-Mem | Dask Threads | Dask Distributed | Shared-Mem Speedup |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Small** | 100 bp | 1,000 | 100,000 bp | 8.67 ms | 9.29 ms | **7.42 ms** | 15.76 ms | 57.83 ms | **1.17x** |
-| **Medium** | 500 bp | 1,000 | 500,000 bp | 37.79 ms | 20.83 ms | **14.63 ms** | 41.40 ms | 77.52 ms | **2.58x** |
-| **Large** | 1,000 bp | 1,000 | 1,000,000 bp | 76.92 ms | 37.24 ms | **29.61 ms** | 83.05 ms | 97.60 ms | **2.60x** |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Small** | 100 bp | 1,000 | 100,000 bp | 14.12 ms | 17.62 ms | **12.08 ms** | 20.48 ms | 55.48 ms | **1.17x** |
+| **Medium** | 500 bp | 1,000 | 500,000 bp | 68.94 ms | 35.41 ms | **26.74 ms** | 69.60 ms | 101.36 ms | **2.58x** |
+| **Large** | 1,000 bp | 1,000 | 1,000,000 bp | 148.42 ms | 71.76 ms | **55.57 ms** | 129.63 ms | 178.85 ms | **2.67x** |
 
 ### Key Performance Insights
 1. **100% Bit-Exact Determinism**: Every backend (CPU oracle, CUDA baseline, CUDA shared memory, Dask threads, and Dask distributed) produces identical alignment lengths, match counts, mismatch counts, scores, and mismatch positions.
 2. **Workload Scaling**:
-   - For small sequence batches (≤100 kbp), the unaccelerated CPU oracle is exceptionally competitive (~8.7 ms) because host buffer allocation, PCIe transfer, and thread creation overhead offset raw kernel speed.
-   - For medium to large batches (0.5–1.0 Mbp+), CUDA shared-memory caching delivers **2.58x to 2.60x wall-clock speedup** over CPU, and over **34x raw kernel speedup** by amortizing PCIe transfers.
+   - For small sequence batches ($\le 100\text{ kbp}$), the unaccelerated CPU oracle is competitive (~14 ms) because host buffer allocation, PCIe transfer, and thread creation overhead offset raw kernel speed.
+   - For medium to large batches ($0.5\text{--}1.0\text{ Mbp}$), CUDA shared-memory caching delivers **2.58x to 2.67x wall-clock speedup** over CPU, and over **36x raw kernel speedup** by amortizing PCIe transfers.
 3. **Dask Task Granularity**:
    - Dask thread parallelism scales effectively on large sequences without IPC overhead.
-   - For in-memory data, Dask `LocalCluster` introduces inter-process RPC and task-graph scheduling overhead. Batch auto-tuning (`batch_size=125` vs `batch_size=1`) mitigates this, reducing scheduling latency by **77.5%**.
+   - For in-memory data, Dask `LocalCluster` introduces inter-process RPC and task-graph scheduling overhead. Batch auto-tuning mitigates this, reducing scheduling latency by **77.5%**.
 
 ---
 

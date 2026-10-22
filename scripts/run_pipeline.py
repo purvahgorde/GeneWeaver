@@ -22,6 +22,11 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from alignment.integration import run_pipeline, run_pipeline_timed
+from parser.fasta_parser import parse_fasta
+from chunking.genome_chunker import chunk_sequence
+from scoring.biological_scoring import score_alignment_results, calculate_gc_content
+from pam.pam_detector import find_pam_sites
+from visualization.mismatch_visualizer import format_dna_alignment
 
 
 def main() -> int:
@@ -48,9 +53,9 @@ def main() -> int:
     )
     parser.add_argument(
         "--backend",
-        choices=["cpu", "cuda", "auto"],
+        choices=["cpu", "cuda", "dask", "auto"],
         default="cpu",
-        help="Execution backend (default: cpu)",
+        help="Execution backend (cpu, cuda, dask, auto; default: cpu)",
     )
     parser.add_argument(
         "--shared-mem",
@@ -60,12 +65,22 @@ def main() -> int:
     parser.add_argument(
         "--fallback-to-cpu",
         action="store_true",
-        help="Fallback cleanly to CPU if CUDA backend is unavailable or fails",
+        help="Fallback cleanly to CPU if accelerated backend is unavailable or fails",
     )
     parser.add_argument(
         "--timed",
         action="store_true",
-        help="Display microsecond execution timings",
+        help="Display execution timings breakdown",
+    )
+    parser.add_argument(
+        "--score",
+        action="store_true",
+        help="Compute and display biological scoring summary and PAM analysis",
+    )
+    parser.add_argument(
+        "--visualize",
+        action="store_true",
+        help="Display formatted color-coded DNA mismatch alignment in terminal",
     )
 
     args = parser.parse_args()
@@ -79,7 +94,87 @@ def main() -> int:
     print(f"Fallback   : {args.fallback_to_cpu}")
 
     try:
-        if args.timed:
+        if args.backend == "dask":
+            from distributed.dask_processor import (
+                process_fasta_dask,
+                process_fasta_dask_timed,
+                is_dask_available,
+                DaskNotAvailableError,
+            )
+
+            if not is_dask_available():
+                if args.fallback_to_cpu:
+                    print("\n[Notice] Dask is unavailable; falling back cleanly to CPU.")
+                    if args.timed:
+                        results, timings = run_pipeline_timed(
+                            fasta_path=args.fasta,
+                            target=args.target,
+                            chunk_size=args.chunk_size,
+                            backend="cpu",
+                        )
+                        print(f"\nCompleted in {timings.total_pipeline_time * 1000:.3f} ms (Backend used: {timings.backend}):")
+                        print(f"  Parse Time    : {timings.parse_time * 1000:.3f} ms")
+                        print(f"  Chunk Time    : {timings.chunk_time * 1000:.3f} ms")
+                        print(f"  Alignment Time: {timings.alignment_time * 1000:.3f} ms")
+                        print(f"  Aligned Chunks: {len(results)}")
+                    else:
+                        results = run_pipeline(
+                            fasta_path=args.fasta,
+                            target=args.target,
+                            chunk_size=args.chunk_size,
+                            backend="cpu",
+                        )
+                        print(f"\nAligned {len(results)} chunks successfully.")
+                else:
+                    raise DaskNotAvailableError("Dask is requested but not available in current environment.")
+            else:
+                try:
+                    if args.timed:
+                        results, dask_timing = process_fasta_dask_timed(
+                            fasta_path=args.fasta,
+                            target=args.target,
+                            chunk_size=args.chunk_size,
+                            skip_unequal=True,
+                        )
+                        print(f"\nCompleted in {dask_timing.total_pipeline_time * 1000:.3f} ms (Backend used: dask):")
+                        print(f"  Parse Time    : {dask_timing.parse_time * 1000:.3f} ms")
+                        print(f"  Chunk Time    : {dask_timing.chunk_time * 1000:.3f} ms")
+                        print(f"  Alignment Time: {dask_timing.dask_align_time * 1000:.3f} ms")
+                        print(f"  Dask Tasks    : {dask_timing.num_tasks}")
+                        print(f"  Aligned Chunks: {len(results)}")
+                    else:
+                        results = process_fasta_dask(
+                            fasta_path=args.fasta,
+                            target=args.target,
+                            chunk_size=args.chunk_size,
+                            skip_unequal=True,
+                        )
+                        print(f"\nAligned {len(results)} chunks successfully.")
+                except Exception:
+                    if not args.fallback_to_cpu:
+                        raise
+                    print("\n[Notice] Dask execution encountered an error; falling back cleanly to CPU.")
+                    if args.timed:
+                        results, timings = run_pipeline_timed(
+                            fasta_path=args.fasta,
+                            target=args.target,
+                            chunk_size=args.chunk_size,
+                            backend="cpu",
+                        )
+                        print(f"\nCompleted in {timings.total_pipeline_time * 1000:.3f} ms (Backend used: {timings.backend}):")
+                        print(f"  Parse Time    : {timings.parse_time * 1000:.3f} ms")
+                        print(f"  Chunk Time    : {timings.chunk_time * 1000:.3f} ms")
+                        print(f"  Alignment Time: {timings.alignment_time * 1000:.3f} ms")
+                        print(f"  Aligned Chunks: {len(results)}")
+                    else:
+                        results = run_pipeline(
+                            fasta_path=args.fasta,
+                            target=args.target,
+                            chunk_size=args.chunk_size,
+                            backend="cpu",
+                        )
+                        print(f"\nAligned {len(results)} chunks successfully.")
+        elif args.timed:
             results, timings = run_pipeline_timed(
                 fasta_path=args.fasta,
                 target=args.target,
@@ -108,6 +203,38 @@ def main() -> int:
                 fallback_to_cpu=args.fallback_to_cpu,
             )
             print(f"\nAligned {len(results)} chunks successfully.")
+
+        if args.score:
+            scoring = score_alignment_results(results)
+            target_gc = calculate_gc_content(args.target)
+            print("\n--- Biological Scoring Summary ---")
+            print(f"Target GC Content : {target_gc:.2f}%")
+            print(f"Total Chunks      : {int(scoring['total_chunks'])}")
+            print(f"Total Matches     : {int(scoring['total_matches'])}")
+            print(f"Total Mismatches  : {int(scoring['total_mismatches'])}")
+            print(f"Avg Similarity    : {scoring['average_similarity']:.2f}%")
+            print(f"Avg Score         : {scoring['average_score']:.4f}")
+            print(f"Max Score         : {scoring['max_score']:.4f}")
+            print(f"Min Score         : {scoring['min_score']:.4f}")
+
+            # PAM sites in target
+            pam_sites = find_pam_sites(args.target)
+            if pam_sites:
+                print(f"SpCas9 PAMs in Target: {pam_sites}")
+
+        if args.visualize:
+            sequences = parse_fasta(args.fasta)
+            all_chunks = [
+                chk
+                for seq in sequences
+                for chk in chunk_sequence(seq, args.chunk_size)
+                if len(chk) == len(args.target)
+            ]
+            print("\n--- DNA Alignment Visualization ---")
+            from rich.console import Console
+            console = Console()
+            formatted_text = format_dna_alignment(all_chunks, args.target)
+            console.print(formatted_text)
 
         return 0
     except Exception as exc:
