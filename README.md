@@ -54,7 +54,7 @@ GeneWeaver is a high-performance, multi-backend CRISPR sequence alignment and ge
 
 ## Features & Supported Backends
 
-- **CPU Alignment Core (`src/alignment/cpu_alignment.py`)**: Exact, deterministic baseline computing sequence identity, mismatch counts, and exact mismatch positions with IUPAC base validation.
+- **CPU Alignment Core (`src/alignment/cpu_alignment.py`)**: Exact, deterministic baseline computing sequence identity, mismatch counts, and exact mismatch positions with canonical DNA base validation (`A`, `C`, `G`, `T`).
 - **CUDA Acceleration (`src/alignment/cuda_alignment.py`)**:
   - *Baseline Kernel*: Grid-strided 1D thread blocks computing sequence comparisons in parallel.
   - *Shared-Memory Kernel*: Cooperatively caches broadcast guide sequences into fast L1 shared memory (`s_target`), eliminating 128x redundant DRAM reads and cutting PCIe host-to-device transfers by 50%.
@@ -71,7 +71,7 @@ GeneWeaver is a high-performance, multi-backend CRISPR sequence alignment and ge
   - SpCas9 `NGG` PAM motif detection and target protospacer affinity scoring.
   - Sequence GC content computation and alignment scoring aggregates.
 - **Interactive Terminal Dashboard (`src/dashboard/`, `src/ui/`)**:
-  - Full-screen terminal dashboard powered by Textual and Rich with live progress bars, real-time statistics, and color-coded DNA base comparisons.
+  - Full-screen terminal dashboard powered by Textual and Rich with an execution progress indicator, alignment statistics, and color-coded DNA base comparisons.
 - **Mismatch Visualizer (`src/visualization/`)**:
   - Rich formatted text highlighting matches in green and mismatches in red.
   - Lightweight ASCII alignment rendering (`|` for matches, `.` for mismatches).
@@ -116,7 +116,7 @@ GeneWeaver/
 │   ├── scoring/             # Biological scoring & DNA validation
 │   ├── ui/                  # Textual user interface implementation
 │   └── visualization/       # Rich & ASCII mismatch visualizer
-├── tests/                   # Consolidated regression test suite (307 tests)
+├── tests/                   # Consolidated regression test suite (315 discovered tests)
 ├── .gitignore               # Cache, virtualenv, and build exclusions
 ├── pytest.ini               # Test configuration and pythonpath settings
 ├── requirements.txt         # Package dependencies
@@ -212,24 +212,24 @@ GeneWeaver includes an interactive full-screen terminal user interface powered b
 
 ```bash
 # Launch interactive dashboard:
-python src/dashboard/textual_dashboard.py
+python -m src.dashboard.textual_dashboard
 ```
 
 ### Dashboard Features:
-- **Real-time Pipeline Execution**: Trigger alignments with the `Run Alignment` button.
+- **Pipeline Execution**: Trigger alignments with the `Run Alignment` button and view the resulting statistics.
 - **Summary Metrics**: View total sequence count, chunk count, aligned chunks, total matches, total mismatches, and overall percentage similarity.
 - **Colored Alignment Inspection**: Visually inspect candidate chunks against the target with matches highlighted in green, mismatches highlighted in red, and exact 1-based mismatch positions reported.
-- **Live Progress & Timings**: Progress bar tracking execution with millisecond timing breakdowns.
+- **Progress & Timing**: Displays execution progress and total pipeline time in milliseconds.
 
 ---
 
 ## Running Tests
 
-Run the full regression test suite (307 passed tests):
+Run the full regression test suite:
 
 ```bash
 # Run all tests:
-pytest tests/ src/tests/ -v
+python -m pytest -v
 
 # Run cross-backend parity tests (CPU vs CUDA vs Dask):
 pytest tests/test_cross_backend_parity.py -v
