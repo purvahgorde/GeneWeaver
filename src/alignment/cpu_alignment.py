@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 
@@ -8,13 +9,33 @@ VALID_BASES: frozenset[str] = frozenset("ACGT")
 
 
 # ── Result container ──────────────────────────────────────────────────────
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class AlignmentResult:
     matches: int
     mismatches: int
     alignment_length: int
     score: float
     mismatch_positions: list[int] = field(default_factory=list)
+
+    def __eq__(self, other: object) -> bool:
+        if not hasattr(other, "matches"):
+            return False
+        return (
+            self.matches == getattr(other, "matches", None)
+            and self.mismatches == getattr(other, "mismatches", None)
+            and self.alignment_length == getattr(other, "alignment_length", None)
+            and math.isclose(self.score, getattr(other, "score", 0.0), abs_tol=1e-5)
+            and list(self.mismatch_positions) == list(getattr(other, "mismatch_positions", []))
+        )
+
+    def __hash__(self) -> int:
+        return hash((
+            self.matches,
+            self.mismatches,
+            self.alignment_length,
+            round(self.score, 6),
+            tuple(self.mismatch_positions),
+        ))
 
     def __repr__(self) -> str:  # pragma: no cover
         return (

@@ -36,3 +36,21 @@ class TestFastaParser:
         fasta_file.write_text(">seq1\nACGT\n>seq2\nTGCA\n")
         sequences = parse_fasta(fasta_file)
         assert sequences == ["ACGT", "TGCA"]
+
+    def test_empty_fasta_file(self, tmp_path):
+        empty_file = tmp_path / "empty.fasta"
+        empty_file.write_text("")
+        sequences = parse_fasta(empty_file)
+        assert sequences == []
+
+    def test_none_path_raises(self):
+        with pytest.raises(TypeError, match="must be a valid path"):
+            parse_fasta(None)
+
+    def test_empty_string_path_raises(self):
+        with pytest.raises(ValueError, match="cannot be empty"):
+            parse_fasta("   ")
+
+    def test_directory_path_raises(self, tmp_path):
+        with pytest.raises(FileNotFoundError, match="not a file"):
+            parse_fasta(tmp_path)

@@ -29,8 +29,8 @@ def process_genome(file_path, chunk_size):
 
     Returns
     -------
-    list[str]
-        List of genomic chunk strings.
+    tuple[list[str], list[str]]
+        Tuple containing (sequences, chunks).
     """
     sequences = parse_fasta(file_path)
 
@@ -40,7 +40,7 @@ def process_genome(file_path, chunk_size):
         chunks = chunk_sequence(sequence, chunk_size)
         all_chunks.extend(chunks)
 
-    return all_chunks
+    return sequences, all_chunks
 
 
 def run_alignment_pipeline(
@@ -98,8 +98,9 @@ def run_alignment_pipeline(
 
 
 if __name__ == "__main__":
-    chunks = process_genome("data/mock_genome.fasta", 10)
+    sequences, chunks = process_genome("data/mock_genome.fasta", 10)
 
+    print("Total sequences:", len(sequences))
     print("Total chunks:", len(chunks))
 
     for chunk in chunks:

@@ -42,3 +42,29 @@ class TestGenomeChunker:
         seq = "ATGCGTACGTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGC"
         chunks = chunk_sequence(seq, 7)
         assert "".join(chunks) == seq
+
+    def test_chunk_boundary_and_ordering(self):
+        seq = "ABCDEFGHIJ"
+        chunks = chunk_sequence(seq, 3)
+        assert chunks == ["ABC", "DEF", "GHI", "J"]
+        assert chunks[0] == "ABC"
+        assert chunks[1] == "DEF"
+        assert chunks[2] == "GHI"
+        assert chunks[3] == "J"
+
+    def test_invalid_chunk_size_non_positive(self):
+        with pytest.raises(ValueError, match="positive integer"):
+            chunk_sequence("ACGT", 0)
+
+        with pytest.raises(ValueError, match="positive integer"):
+            chunk_sequence("ACGT", -5)
+
+    def test_invalid_types_raise(self):
+        with pytest.raises(TypeError, match="chunk_size must be an integer"):
+            chunk_sequence("ACGT", "4")  # type: ignore
+
+        with pytest.raises(TypeError, match="chunk_size must be an integer"):
+            chunk_sequence("ACGT", True)  # type: ignore
+
+        with pytest.raises(TypeError, match="sequence must be a string"):
+            chunk_sequence(12345, 4)  # type: ignore

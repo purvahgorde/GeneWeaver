@@ -72,6 +72,18 @@ GeneWeaver is a high-throughput, multi-backend genomic sequence alignment system
 - **Resource Management**: Distinguishes between shared clients (`owns_client=False`) and internally spawned `LocalCluster` instances (`owns_client=True`, `owns_cluster=True`). Local schedulers (`scheduler="threads"`) bypass cluster allocation entirely.
 - **Reliability & Incomplete-Result Detection**: Tracks `_is_closed` state, wraps worker crashes in `DaskTaskError`, and verifies that returned results strictly match expected counts.
 
+### 2.6 Biological Scoring (`src/scoring/biological_scoring.py` & `src/scoring/dna_scoring.py`)
+- **Base & Sequence Scoring**: Validates IUPAC canonical bases, scoring base pairs (+1 match, -1 mismatch) and sequences.
+- **CRISPR PAM Detection & Scoring (`src/pam/pam_detector.py`, `src/analysis/pam_scoring.py`)**: Locates SpCas9 `NGG` PAM motifs and computes alignment affinity against target protospacers.
+- **Result Metrics & GC Content**: Computes aggregate biological metrics (mean score, percent similarity, total matches/mismatches) and sequence GC content percentages.
+
+### 2.7 Mismatch Visualization (`src/visualization/mismatch_visualizer.py`)
+- **Rich Terminal Highlighting (`format_dna_alignment`)**: Produces formatted Rich `Text` objects highlighting matches in green and mismatches in red with 1-based mismatch position summaries.
+- **ASCII Rendering (`render_mismatch_ascii`)**: Produces lightweight 3-line terminal alignment displays with `|` matching markers and `.` mismatch markers.
+
+### 2.8 Interactive Terminal Dashboard (`src/dashboard/textual_dashboard.py` & `src/ui/dashboard.py`)
+- **Textual UI Application (`GeneWeaverApp`)**: Full-screen TUI providing real-time sequence loading, progress tracking, match/mismatch statistics, alignment score metrics, and colored mismatch visualization.
+
 ---
 
 ## 3. Data Contracts & Invariants
