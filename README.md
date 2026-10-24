@@ -305,3 +305,29 @@ The following measurements were recorded on a physical test workstation:
 1. **Global DRAM Allocation on Large Sequences**: For sequences exceeding $10^6$ base pairs, streaming chunking should be used to avoid loading the entire dataset into RAM simultaneously.
 2. **Multi-GPU Orchestration**: The current CUDA backend targets the primary CUDA device (`cuda.get_current_device()`). Integrating Dask-CUDA worker device mapping would enable multi-GPU scaling across multiple cards.
 3. **Extended Ambiguity Codes**: The alignment core currently validates canonical DNA bases (`A`, `C`, `G`, `T`). Support for IUPAC ambiguity characters (`R`, `Y`, `S`, `W`, `K`, `M`, `B`, `D`, `H`, `V`, `N`) can be added via custom bitwise lookup tables.
+
+## Streamlit Web Dashboard
+
+GeneWeaver includes a single-page web application for CRISPR DNA alignment.
+
+### Launch the Web Application
+
+Install dependencies:
+
+    python -m pip install -r requirements.txt
+
+Start Streamlit:
+
+    python -m streamlit run src/web/app.py
+
+Open http://localhost:8501 in your browser.
+
+### Web Dashboard Features
+
+- Upload a FASTA file or use the built-in demo dataset.
+- Select CPU or Dask execution.
+- Configure target DNA sequence and chunk size.
+- View alignment statistics and execution time.
+- Explore DNA matches and mismatches with color highlighting.
+- View biological scoring information.
+

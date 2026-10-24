@@ -7,3 +7,4 @@ distributed>=2024.1.0
 textual>=0.80.0
 rich>=13.0.0
 anyio>=4.0.0
+streamlit>=1.66.0
