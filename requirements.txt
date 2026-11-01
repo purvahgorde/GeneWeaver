@@ -1,0 +1,10 @@
+biopython>=1.80
+pytest>=8.0.0
+numpy>=1.24.0
+numba>=0.59.0
+dask>=2024.1.0
+distributed>=2024.1.0
+textual>=0.80.0
+rich>=13.0.0
+anyio>=4.0.0
+streamlit>=1.66.0
