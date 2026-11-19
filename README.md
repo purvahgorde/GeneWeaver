@@ -198,7 +198,7 @@ python scripts/run_pipeline.py --fasta data/mock_genome.fasta --target ATGCGTACG
 
 ```text
 --- GeneWeaver Pipeline Runner ---
-FASTA File : C:\Pm\GeneWeaver\data\mock_genome.fasta
+FASTA File : data/mock_genome.fasta
 Target     : ATGCGTACGT (length: 10)
 Chunk Size : 10
 Backend    : cpu
@@ -219,7 +219,7 @@ python scripts/run_pipeline.py --backend cuda --shared-mem --timed
 
 ```text
 --- GeneWeaver Pipeline Runner ---
-FASTA File : C:\Pm\GeneWeaver\data\mock_genome.fasta
+FASTA File : data/mock_genome.fasta
 Target     : ATGCGTACGT (length: 10)
 Chunk Size : 10
 Backend    : cuda
@@ -243,7 +243,7 @@ python scripts/run_pipeline.py --fasta data/demo_crispr.fasta --target GAGTCCGAG
 
 ```text
 --- GeneWeaver Pipeline Runner ---
-FASTA File : C:\Pm\GeneWeaver\data\demo_crispr.fasta
+FASTA File : data/demo_crispr.fasta
 Target     : GAGTCCGAGCAGAAGAAGAA (length: 20)
 Chunk Size : 20
 Backend    : cpu
@@ -623,7 +623,7 @@ class AlignmentResult:
 
 ## 🛡️ License
 
-This project is licensed under the **MIT License** — see the [LICENSE](LICENSE) file for complete details.
+This project is licensed under the Pranay Mahajan & Purva Gorde Team.
 
 <div align="center">
 
