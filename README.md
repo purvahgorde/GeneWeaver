@@ -623,9 +623,10 @@ class AlignmentResult:
 
 ## 🛡️ License
 
+<div align="center">
+
 This project is licensed under the Pranay Mahajan & Purva Gorde Team.
 
-<div align="center">
 
 **GeneWeaver** • *Architected for Precision, Scalability, and High-Throughput Genomic Discovery.*
 
