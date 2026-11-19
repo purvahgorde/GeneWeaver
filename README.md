@@ -625,7 +625,7 @@ class AlignmentResult:
 
 <div align="center">
 
-<strong>Built with ❤️ By the Team AeroDrift</strong>
+<strong>Built with ❤️ By the Team GeneWeaver</strong>
 
 
 **GeneWeaver** • *Architected for Precision, Scalability, and High-Throughput Genomic Discovery.*
