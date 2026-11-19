@@ -625,7 +625,7 @@ class AlignmentResult:
 
 <div align="center">
 
-This project is licensed under the Pranay Mahajan & Purva Gorde Team.
+<strong>Built with ❤️ By the Team AeroDrift</strong>
 
 
 **GeneWeaver** • *Architected for Precision, Scalability, and High-Throughput Genomic Discovery.*
